@@ -529,22 +529,19 @@ class CephPrefix(CephArgtype):
 
     def valid(self, s, partial=False):
         try:
+            if partial:
+                if self.prefix.startswith(s):
+                    self.val = s
+                    return
+            else:
+                if s == self.prefix:
+                    self.val = s
+                    return
+            raise ArgumentPrefix(u'no match for {0}'.format(s))
+        except UnicodeDecodeError:
             # `prefix` can always be converted into unicode when being compared,
             # but `s` could be anything passed by user.
-            s = unicode(s)
-        except UnicodeDecodeError:
             raise ArgumentPrefix("no match for {0}".format(s))
-
-        if partial:
-            if self.prefix.startswith(s):
-                self.val = s
-                return
-        else:
-            if s == self.prefix:
-                self.val = s
-                return
-
-        raise ArgumentPrefix("no match for {0}".format(s))
 
     def __str__(self):
         return self.prefix
