@@ -120,7 +120,8 @@ public:
    * with a warning string for each old Op.
    * @return True if there are any Ops to warn on, false otherwise.
    */
-  bool check_ops_in_flight(std::vector<string> &warning_strings, int *slow = NULL);
+  bool check_ops_in_flight(std::vector<string> &warning_strings);
+  bool check_ops_in_flight(std::vector<string> &warning_strings, int &slow);
   void mark_event(TrackedOp *op, const string &evt,
                           utime_t time = ceph_clock_now(g_ceph_context));
 
