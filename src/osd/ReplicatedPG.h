@@ -272,7 +272,7 @@ public:
   void on_global_recover(
     const hobject_t &oid,
     const object_stat_sum_t &stat_diff);
-  void failed_push(pg_shard_t from, const hobject_t &soid);
+  void failed_push(const list<pg_shard_t> &from, const hobject_t &soid);
   void cancel_pull(const hobject_t &soid);
 
   template <typename T>
