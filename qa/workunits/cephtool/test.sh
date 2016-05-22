@@ -1084,11 +1084,29 @@ function test_mon_osd()
   for f in noup nodown noin noout noscrub nodeep-scrub nobackfill norebalance norecover notieragent full sortbitwise
   do
     ceph osd set $f
+    if [[ "$f" == "sortbitwise" ]]; then 
+      expect_failure $TMPDIR "sortbitwise flag is already set"
+    fi
     ceph osd unset $f
+    if [[ "$f" == "full" ]]; then
+      # As full flag gets unset if there wont be any OSD in cluster which is full
+      # Not taking failure as it gets unset by default  
+      expect_failure $TMPDIR "full flag is not set" || return 0
+    fi
   done
   ceph osd set sortbitwise  # new backends cant handle nibblewise
+  expect_failure $TMPDIR "sortbitwise flag is already set"
   expect_false ceph osd set bogus
   expect_false ceph osd unset bogus
+  
+  ceph osd set noout >& $TMPFILE || return 1
+  check_response "set noout"
+  ceph osd set noout >& $TMPFILE || return 1
+  expect_failure $TMPDIR "noout flag is already set"
+  ceph osd unset noout >& $TMPFILE || return 1
+  check_response "unset noout"
+  ceph osd unset noout >& $TMPFILE || return 1
+  expect_failure $TMPDIR "noout flag is not set"
 
   ceph osd set noup
   ceph osd down 0

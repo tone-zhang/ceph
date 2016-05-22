@@ -4806,8 +4806,12 @@ bool OSDMonitor::prepare_set_flag(MonOpRequestRef op, int flag)
   ostringstream ss;
   if (pending_inc.new_flags < 0)
     pending_inc.new_flags = osdmap.get_flags();
-  pending_inc.new_flags |= flag;
-  ss << "set " << OSDMap::get_flag_string(flag);
+  if (osdmap.test_flag(flag)) {
+    ss << OSDMap::get_flag_string(flag) << " flag is already set";
+  } else {
+    pending_inc.new_flags |= flag;
+    ss << "set " << OSDMap::get_flag_string(flag);
+  }
   wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, ss.str(),
 						    get_last_committed() + 1));
   return true;
@@ -4819,8 +4823,12 @@ bool OSDMonitor::prepare_unset_flag(MonOpRequestRef op, int flag)
   ostringstream ss;
   if (pending_inc.new_flags < 0)
     pending_inc.new_flags = osdmap.get_flags();
-  pending_inc.new_flags &= ~flag;
-  ss << "unset " << OSDMap::get_flag_string(flag);
+  if (!osdmap.test_flag(flag)) {
+    ss << OSDMap::get_flag_string(flag) << " flag is not set";
+  } else { 
+    pending_inc.new_flags &= ~flag;
+    ss << "unset " << OSDMap::get_flag_string(flag);
+  }
   wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, ss.str(),
 						    get_last_committed() + 1));
   return true;
