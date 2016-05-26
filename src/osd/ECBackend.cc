@@ -500,6 +500,8 @@ void ECBackend::continue_recovery_op(
 	assert(!op.recovery_progress.first);
 	dout(10) << __func__ << ": canceling recovery op for obj " << op.hoid
 		 << dendl;
+	// XXX: Doing this on the read error handling just loops in recovery
+	// How would this case ever actually happen?
 	get_parent()->cancel_pull(op.hoid);
 	recovery_ops.erase(op.hoid);
 	return;
