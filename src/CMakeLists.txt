@@ -726,6 +726,7 @@ target_link_libraries(ceph-dencoder
   librados
   librbd
   global
+  os
   osd
   mds
   mon
