@@ -76,7 +76,6 @@ set(librbd_objs
   $<TARGET_OBJECTS:librbd-objs>
   $<TARGET_OBJECTS:osdc_rbd_objs>
   $<TARGET_OBJECTS:common_util_obj>
-  $<TARGET_OBJECTS:krbd_objs>
   $<TARGET_OBJECTS:parse_secret_objs>)
 if(BUILD_SHARED_LIBS)
   list(APPEND targets librbd)
