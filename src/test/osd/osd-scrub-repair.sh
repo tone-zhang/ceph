@@ -392,10 +392,28 @@ function TEST_corrupt_scrub_replicated() {
     test $(jq -r '.[0]' $dir/json) = $pg || return 1
 
     rados list-inconsistent-obj $pg > $dir/json || return 1
+    cat $dir/json > dz.out
     # Get epoch for repair-get requests
     epoch=$(jq .epoch $dir/json)
     # Check object count
     test $(jq '.inconsistents | length' $dir/json) = "$total_objs" || return 1
+
+    jq -c '.inconsistents | sort' > $dir/checkcsjson << EOF
+{"epoch":48,"inconsistents":[{"object":{"name":"OBJ1","nspace":"",
+"locator":"","snap":"head"},"errors":["missing"],"shards":[{"osd":0,
+"size":7,"errors":[]},{"osd":1,"errors":["missing"]}]},
+{"object":{"name":"OBJ2","nspace":"","locator":"","snap":"head"},
+"errors":["missing"],"shards":[{"osd":0,"errors":["missing"]},
+{"osd":1,"size":7,"errors":[]}]},{"object":{"name":"OBJ3",
+"nspace":"","locator":"","snap":"head"},"errors":["missing"],
+"shards":[{"osd":0,"size":7,"errors":[]},{"osd":1,"errors":["missing"]}]},
+{"object":{"name":"OBJ4","nspace":"","locator":"","snap":"head"},
+"errors":["missing"],"shards":[{"osd":0,"errors":["missing"]},
+{"osd":1,"size":7,"errors":[]}]}]}
+EOF
+
+    jq -c '.inconsistents | sort' $dir/json > $dir/csjson
+    diff $dir/csjson $dir/checkcsjson || return 1
 
     rados rmpool $poolname $poolname --yes-i-really-really-mean-it
     teardown $dir || return 1
