@@ -32,19 +32,13 @@ using namespace std;
 #include "osd/OSDMap.h"
 
 #include "PaxosService.h"
-#include "Session.h"
 
 class Monitor;
 class PGMap;
-
-#include "messages/MOSDBoot.h"
-#include "messages/MMonCommand.h"
-#include "messages/MOSDMap.h"
-#include "messages/MPoolOp.h"
+class MonSession;
+class MOSDMap;
 
 #include "erasure-code/ErasureCodeInterface.h"
-
-#include "common/TrackedOp.h"
 #include "mon/MonOpRequest.h"
 
 #define OSD_METADATA_PREFIX "osd_metadata"
@@ -418,7 +412,6 @@ private:
 
   void handle_osd_timeouts(const utime_t &now,
 			   std::map<int,utime_t> &last_osd_report);
-  void mark_all_down();
 
   void send_latest(MonOpRequestRef op, epoch_t start=0);
   void send_latest_now_nodelete(MonOpRequestRef op, epoch_t start=0) {

@@ -522,6 +522,10 @@ public:
     return fsid;
   }
 
+  uint64_t estimate_objects_overhead(uint64_t num_objects) override {
+    return num_objects * 300; //assuming per-object overhead is 300 bytes
+  }
+
   objectstore_perf_stat_t get_cur_stats() {
     return objectstore_perf_stat_t();
   }
@@ -610,7 +614,8 @@ private:
 		    CollectionRef& c,
 		    OnodeRef& o,
 		    uint64_t expected_object_size,
-		    uint64_t expected_write_size);
+		    uint64_t expected_write_size,
+		    uint32_t flags);
   int _clone(TransContext *txc,
 	     CollectionRef& c,
 	     OnodeRef& oldo,

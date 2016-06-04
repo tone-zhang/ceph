@@ -28,40 +28,21 @@
 #include "common/perf_counters.h"
 
 #include "messages/MOSDOp.h"
-#include "messages/MOSDOpReply.h"
 #include "messages/MOSDSubOp.h"
 #include "messages/MOSDSubOpReply.h"
-#include "messages/MOSDRepOp.h"
-#include "messages/MOSDRepOpReply.h"
-
-#include "messages/MOSDPGNotify.h"
-#include "messages/MOSDPGInfo.h"
-#include "messages/MOSDPGRemove.h"
 #include "messages/MOSDPGTrim.h"
 #include "messages/MOSDPGScan.h"
+#include "messages/MOSDRepScrub.h"
 #include "messages/MOSDPGBackfill.h"
-
-#include "messages/MOSDPing.h"
-#include "messages/MWatchNotify.h"
-
-#include "messages/MOSDPGPush.h"
-#include "messages/MOSDPGPull.h"
-#include "messages/MOSDPGPushReply.h"
 #include "messages/MOSDPGUpdateLogMissing.h"
 #include "messages/MOSDPGUpdateLogMissingReply.h"
 #include "messages/MCommandReply.h"
-
-#include "Watch.h"
-
 #include "mds/inode_backtrace.h" // Ugh
 
 #include "common/config.h"
 #include "include/compat.h"
-#include "common/cmdparse.h"
-
 #include "mon/MonClient.h"
 #include "osdc/Objecter.h"
-
 #include "json_spirit/json_spirit_value.h"
 #include "json_spirit/json_spirit_reader.h"
 #include "include/assert.h"  // json_spirit clobbers it
@@ -391,7 +372,6 @@ void ReplicatedPG::maybe_kick_recovery(
   } else {
     dout(7) << "object " << soid << " v " << v << ", recovering." << dendl;
     PGBackend::RecoveryHandle *h = pgbackend->open_recovery_op();
-    h->cache_dont_need = false;
     if (is_missing_object(soid)) {
       recover_missing(soid, v, cct->_conf->osd_client_op_priority, h);
     } else {
@@ -1589,6 +1569,12 @@ void ReplicatedPG::do_op(OpRequestRef& op)
 
   m->finish_decode();
   m->clear_payload();
+
+  if (m->has_flag(CEPH_OSD_FLAG_PARALLELEXEC)) {
+    // not implemented.
+    osd->reply_op_error(op, -EINVAL);
+    return;
+  }
 
   if (op->rmw_flags == 0) {
     int r = osd->osd->init_op_flags(op);
@@ -3361,7 +3347,7 @@ ReplicatedPG::OpContextUPtr ReplicatedPG::trim_object(const hobject_t &coid)
   bufferlist bl;
   ObjectContextRef obc = get_object_context(coid, false, NULL);
   if (!obc) {
-    derr << __func__ << "could not find coid " << coid << dendl;
+    derr << __func__ << " could not find coid " << coid << dendl;
     assert(0);
   }
   assert(obc->ssc);
@@ -3371,6 +3357,7 @@ ReplicatedPG::OpContextUPtr ReplicatedPG::trim_object(const hobject_t &coid)
     obc->ssc->snapset.head_exists ? CEPH_NOSNAP:CEPH_SNAPDIR, coid.get_hash(),
     info.pgid.pool(), coid.get_namespace());
   ObjectContextRef snapset_obc = get_object_context(snapoid, false);
+  assert(snapset_obc);
 
   object_info_t &coi = obc->obs.oi;
   set<snapid_t> old_snaps(coi.snaps.begin(), coi.snaps.end());
@@ -4962,7 +4949,8 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
           t->touch(soid);
 	}
         t->set_alloc_hint(soid, op.alloc_hint.expected_object_size,
-                          op.alloc_hint.expected_write_size);
+                          op.alloc_hint.expected_write_size,
+			  op.alloc_hint.flags);
         ctx->delta_stats.num_wr++;
         result = 0;
       }
@@ -6117,6 +6105,9 @@ inline int ReplicatedPG::_delete_oid(OpContext *ctx, bool no_whiteout)
     dout(20) << __func__ << " deleting whiteout on " << soid << dendl;
     ctx->delta_stats.num_whiteouts--;
   }
+  if (oi.is_cache_pinned()) {
+    ctx->delta_stats.num_objects_pinned--;
+  }
   if (soid.is_head())
     snapset.head_exists = false;
   obs.exists = false;
@@ -7040,14 +7031,14 @@ int ReplicatedPG::fill_in_copy_get(
   bufferlist& bl = reply_obj.data;
   if (left > 0 && !cursor.data_complete) {
     if (cursor.data_offset < oi.size) {
-      left = MIN(oi.size - cursor.data_offset, (uint64_t)left);
+      uint64_t max_read = MIN(oi.size - cursor.data_offset, (uint64_t)left);
       if (cb) {
 	async_read_started = true;
 	ctx->pending_async_reads.push_back(
 	  make_pair(
-	    boost::make_tuple(cursor.data_offset, left, osd_op.op.flags),
+	    boost::make_tuple(cursor.data_offset, max_read, osd_op.op.flags),
 	    make_pair(&bl, cb)));
-        result = left;
+        result = max_read;
 	cb->len = result;
       } else {
 	result = pgbackend->objects_read_sync(
@@ -8478,12 +8469,6 @@ void ReplicatedPG::eval_repop(RepGather *repop)
 void ReplicatedPG::issue_repop(RepGather *repop, OpContext *ctx)
 {
   const hobject_t& soid = ctx->obs->oi.soid;
-  if (ctx->op &&
-    ((static_cast<MOSDOp *>(
-	ctx->op->get_req()))->has_flag(CEPH_OSD_FLAG_PARALLELEXEC))) {
-    // replicate original op for parallel execution on replica
-    assert(0 == "broken implementation, do not use");
-  }
   dout(7) << "issue_repop rep_tid " << repop->rep_tid
           << " o " << soid
           << dendl;
@@ -9372,8 +9357,8 @@ SnapSetContext *ReplicatedPG::get_snapset_context(
 	// try _snapset
       if (!(oid.is_snapdir() && !oid_existed))
 	r = pgbackend->objects_get_attr(oid.get_snapdir(), SS_ATTR, &bv);
-	if (r < 0 && !can_create)
-	  return NULL;
+      if (r < 0 && !can_create)
+	return NULL;
       }
     } else {
       assert(attrs->count(SS_ATTR));
@@ -9885,7 +9870,7 @@ void ReplicatedPG::mark_all_unfound_lost(
     void operator()() {
       pg->requeue_ops(pg->waiting_for_all_missing);
       pg->waiting_for_all_missing.clear();
-      pg->osd->queue_for_recovery(pg);
+      pg->queue_recovery();
     }
   };
   submit_log_entries(
@@ -9895,7 +9880,7 @@ void ReplicatedPG::mark_all_unfound_lost(
       [=]() {
 	requeue_ops(waiting_for_all_missing);
 	waiting_for_all_missing.clear();
-	osd->queue_for_recovery(this);
+	queue_recovery();
 
 	stringstream ss;
 	ss << "pg has " << num_unfound
@@ -10026,7 +10011,6 @@ void ReplicatedPG::on_shutdown()
   dout(10) << "on_shutdown" << dendl;
 
   // remove from queues
-  osd->recovery_wq.dequeue(this);
   osd->pg_stat_queue_dequeue(this);
   osd->dequeue_pg(this, 0);
   osd->peering_wq.dequeue(this);
@@ -10122,6 +10106,11 @@ void ReplicatedPG::on_change(ObjectStore::Transaction *t)
   if (hit_set && hit_set->insert_count() == 0) {
     dout(20) << " discarding empty hit_set" << dendl;
     hit_set_clear();
+  }
+
+  if (recovery_queued) {
+    recovery_queued = false;
+    osd->clear_queued_recovery(this);
   }
 
   // requeue everything in the reverse order they should be
@@ -10371,10 +10360,11 @@ void PG::MissingLoc::check_recovery_sources(const OSDMapRef osdmap)
   
 
 bool ReplicatedPG::start_recovery_ops(
-  int max, ThreadPool::TPHandle &handle,
-  int *ops_started)
+  uint64_t max,
+  ThreadPool::TPHandle &handle,
+  uint64_t *ops_started)
 {
-  int& started = *ops_started;
+  uint64_t& started = *ops_started;
   started = 0;
   bool work_in_progress = false;
   assert(is_primary());
@@ -10517,7 +10507,7 @@ bool ReplicatedPG::start_recovery_ops(
  * do one recovery op.
  * return true if done, false if nothing left to do.
  */
-int ReplicatedPG::recover_primary(int max, ThreadPool::TPHandle &handle)
+uint64_t ReplicatedPG::recover_primary(uint64_t max, ThreadPool::TPHandle &handle)
 {
   assert(is_primary());
 
@@ -10530,7 +10520,7 @@ int ReplicatedPG::recover_primary(int max, ThreadPool::TPHandle &handle)
 
   // look at log!
   pg_log_entry_t *latest = 0;
-  int started = 0;
+  unsigned started = 0;
   int skipped = 0;
 
   PGBackend::RecoveryHandle *h = pgbackend->open_recovery_op();
@@ -10735,10 +10725,10 @@ int ReplicatedPG::prep_object_replica_pushes(
   return 1;
 }
 
-int ReplicatedPG::recover_replicas(int max, ThreadPool::TPHandle &handle)
+uint64_t ReplicatedPG::recover_replicas(uint64_t max, ThreadPool::TPHandle &handle)
 {
   dout(10) << __func__ << "(" << max << ")" << dendl;
-  int started = 0;
+  uint64_t started = 0;
 
   PGBackend::RecoveryHandle *h = pgbackend->open_recovery_op();
 
@@ -10877,8 +10867,8 @@ bool ReplicatedPG::all_peer_done() const
  * io created objects since the last scan.  For this reason, we call
  * update_range() again before continuing backfill.
  */
-int ReplicatedPG::recover_backfill(
-  int max,
+uint64_t ReplicatedPG::recover_backfill(
+  uint64_t max,
   ThreadPool::TPHandle &handle, bool *work_started)
 {
   dout(10) << "recover_backfill (" << max << ")"
@@ -10939,7 +10929,7 @@ int ReplicatedPG::recover_backfill(
   backfill_info.begin = last_backfill_started;
   update_range(&backfill_info, handle);
 
-  int ops = 0;
+  unsigned ops = 0;
   vector<boost::tuple<hobject_t, eversion_t,
                       ObjectContextRef, vector<pg_shard_t> > > to_push;
   vector<boost::tuple<hobject_t, eversion_t, pg_shard_t> > to_remove;
@@ -10954,9 +10944,6 @@ int ReplicatedPG::recover_backfill(
   }
   backfill_info.trim_to(last_backfill_started);
 
-  hobject_t backfill_pos = MIN_HOBJ(backfill_info.begin,
-				    earliest_peer_backfill(),
-				    get_sort_bitwise());
   while (ops < max) {
     if (cmp(backfill_info.begin, earliest_peer_backfill(),
 	    get_sort_bitwise()) <= 0 &&
@@ -10967,8 +10954,6 @@ int ReplicatedPG::recover_backfill(
       update_range(&backfill_info, handle);
       backfill_info.trim();
     }
-    backfill_pos = MIN_HOBJ(backfill_info.begin, earliest_peer_backfill(),
-			    get_sort_bitwise());
 
     dout(20) << "   my backfill interval " << backfill_info << dendl;
 
@@ -11127,7 +11112,8 @@ int ReplicatedPG::recover_backfill(
       }
     }
   }
-  backfill_pos = MIN_HOBJ(backfill_info.begin, earliest_peer_backfill(),
+
+  hobject_t backfill_pos = MIN_HOBJ(backfill_info.begin, earliest_peer_backfill(),
 			  get_sort_bitwise());
 
   for (set<hobject_t, hobject_t::BitwiseComparator>::iterator i = add_to_stat.begin();
@@ -12314,6 +12300,8 @@ bool ReplicatedPG::agent_choose_mode(bool restart, OpRequestRef op)
   uint64_t num_user_bytes = info.stats.stats.sum.num_bytes;
   uint64_t unflushable_bytes = info.stats.stats.sum.num_bytes_hit_set_archive;
   num_user_bytes -= unflushable_bytes;
+  uint64_t num_overhead_bytes = osd->store->estimate_objects_overhead(num_user_objects);
+  num_user_bytes += num_overhead_bytes;
 
   // also reduce the num_dirty by num_objects_omap
   int64_t num_dirty = info.stats.stats.sum.num_objects_dirty;
@@ -12336,6 +12324,7 @@ bool ReplicatedPG::agent_choose_mode(bool restart, OpRequestRef op)
 	   << " num_dirty: " << num_dirty
 	   << " num_user_objects: " << num_user_objects
 	   << " num_user_bytes: " << num_user_bytes
+	   << " num_overhead_bytes: " << num_overhead_bytes
 	   << " pool.info.target_max_bytes: " << pool.info.target_max_bytes
 	   << " pool.info.target_max_objects: " << pool.info.target_max_objects
 	   << dendl;

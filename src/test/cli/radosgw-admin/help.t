@@ -55,6 +55,7 @@
     zonegroup get              show zone group info
     zonegroup modify           modify an existing zonegroup
     zonegroup set              set zone group info (requires infile)
+    zonegroup remove           remove a zone from a zonegroup
     zonegroup rename           rename a zone group
     zonegroup list             list all zone groups set on this cluster
     zonegroup-map get          show zonegroup-map
@@ -77,8 +78,6 @@
     log rm                     remove log object
     usage show                 show usage (by user, date range)
     usage trim                 trim usage (by user, date range)
-    temp remove                remove temporary objects that were created up to
-                               specified date (and optional time)
     gc list                    dump expired garbage collection objects (specify
                                --include-all to list all entries, including unexpired)
     gc process                 manually process garbage
@@ -136,7 +135,7 @@
                                  replica mdlog get/delete
                                  replica datalog get/delete
      --metadata-key=<key>      key to retrieve metadata from with metadata get
-     --remote=<remote>         remote to pull period
+     --remote=<remote>         zone or zonegroup id of remote gateway
      --period=<id>             period id
      --epoch=<number>          period epoch
      --commit                  commit the period during 'period update'
@@ -144,14 +143,14 @@
      --master-url              master url
      --master-zonegroup=<id>   master zonegroup id
      --master-zone=<id>        master zone id
-     --rgw-realm=<realm>       realm name
-     --realm-id=<realm id>     realm id
-     --realm-new-name=<realm new name> realm new name
-     --rgw-zonegroup=<zonegroup>   zonegroup name
-     --zonegroup-id=<zonegroup id> zonegroup id
-     --rgw-zone=<zone>         name of zone in which radosgw is running
-     --zone-id=<zone id>       zone id
-     --zone-new-name=<zone>    zone new name
+     --rgw-realm=<name>        realm name
+     --realm-id=<id>           realm id
+     --realm-new-name=<name>   realm new name
+     --rgw-zonegroup=<name>    zonegroup name
+     --zonegroup-id=<id>       zonegroup id
+     --rgw-zone=<name>         name of zone in which radosgw is running
+     --zone-id=<id>            zone id
+     --zone-new-name=<name>    zone new name
      --source-zone             specify the source zone (for data sync)
      --default                 set entity (realm, zonegroup, zone) as default
      --read-only               set zone as read-only (when adding to zonegroup)
@@ -187,7 +186,7 @@
   Quota options:
      --bucket                  specified bucket for quota command
      --max-objects             specify max objects (negative value to disable)
-     --max-size                specify max size (in bytes, negative value to disable)
+     --max-size                specify max size (in B/K/M/G/T, negative value to disable)
      --quota-scope             scope of quota (bucket, user)
   
   Orphans search options:

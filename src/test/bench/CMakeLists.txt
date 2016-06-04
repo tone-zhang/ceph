@@ -18,11 +18,11 @@ if (${WITH_RBD})
     rbd_backend.cc
     detailed_stat_collector.cc
     bencher.cc
-    ${CMAKE_SOURCE_DIR}/src/common/TextTable.cc
-    ${CMAKE_SOURCE_DIR}/src/common/secret.c
   )
   add_executable(ceph_smalliobenchrbd
     ${smalliobenchrbd_srcs}
+    $<TARGET_OBJECTS:common_texttable_obj>
+    $<TARGET_OBJECTS:parse_secret_objs>
     )
   target_link_libraries(ceph_smalliobenchrbd
     librbd
@@ -73,3 +73,10 @@ add_executable(ceph_tpbench
 target_link_libraries(ceph_tpbench librados ${Boost_PROGRAM_OPTIONS_LIBRARY} global
   ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS})
 
+install(TARGETS
+  ceph_smalliobench
+  ceph_smalliobenchrbd
+  ceph_smalliobenchfs
+  ceph_smalliobenchdumb
+  ceph_tpbench
+  DESTINATION bin)

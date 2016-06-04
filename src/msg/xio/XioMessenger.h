@@ -130,12 +130,7 @@ public:
 
   virtual ConnectionRef get_loopback_connection();
 
-  virtual int send_keepalive(const entity_inst_t& dest)
-    { return EINVAL; }
-
-  virtual int send_keepalive(Connection *con)
-    { return EINVAL; }
-
+  void unregister_xcon(XioConnection *xcon);
   virtual void mark_down(const entity_addr_t& a);
   virtual void mark_down(Connection *con);
   virtual void mark_down_all();
@@ -164,5 +159,8 @@ protected:
 public:
   uint64_t local_features;
 };
+
+XioCommand* pool_alloc_xio_command(XioConnection *xcon);
+
 
 #endif /* XIO_MESSENGER_H */

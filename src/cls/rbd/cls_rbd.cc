@@ -16,7 +16,7 @@
  * own argument and payload serialization/deserialization, so for ease
  * of implementation we use the existing ceph encoding/decoding
  * methods. Something like json might be preferable, but the rbd
- * kernel module has to be able understand format as well. The
+ * kernel module has to be able to understand format as well. The
  * datatypes exposed to the clients are strings, unsigned integers,
  * and vectors of those types. The on-wire format can be found in
  * src/include/encoding.h.
@@ -138,7 +138,6 @@ cls_method_handle_t h_mirror_image_status_remove_down;
 #define RBD_DIR_ID_KEY_PREFIX "id_"
 #define RBD_DIR_NAME_KEY_PREFIX "name_"
 #define RBD_METADATA_KEY_PREFIX "metadata_"
-#define RBD_MAX_OBJECT_MAP_OBJECT_COUNT 256000000
 
 static int snap_read_header(cls_method_context_t hctx, bufferlist& bl)
 {
@@ -2268,7 +2267,7 @@ int object_map_resize(cls_method_context_t hctx, bufferlist *in, bufferlist *out
   }
 
   // protect against excessive memory requirements
-  if (object_count > RBD_MAX_OBJECT_MAP_OBJECT_COUNT) {
+  if (object_count > cls::rbd::MAX_OBJECT_MAP_OBJECT_COUNT) {
     CLS_ERR("object map too large: %" PRIu64, object_count);
     return -EINVAL;
   }
@@ -3321,8 +3320,8 @@ int image_status_list(cls_method_context_t hctx,
       (*mirror_images)[image_id] = mirror_image;
 
       cls::rbd::MirrorImageStatus status;
-      r = image_status_get(hctx, mirror_image.global_image_id, &status);
-      if (r < 0) {
+      int r1 = image_status_get(hctx, mirror_image.global_image_id, &status);
+      if (r1 < 0) {
 	continue;
       }
 

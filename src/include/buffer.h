@@ -57,10 +57,8 @@
 
 #if __GNUC__ >= 4
   #define CEPH_BUFFER_API  __attribute__ ((visibility ("default")))
-  #define CEPH_BUFFER_DETAILS __attribute__ ((visibility ("hidden")))
 #else
   #define CEPH_BUFFER_API
-  #define CEPH_BUFFER_DETAILS
 #endif
 
 #if defined(HAVE_XIO)
@@ -270,7 +268,7 @@ namespace buffer CEPH_BUFFER_API {
 
   private:
     template <bool is_const>
-    class CEPH_BUFFER_DETAILS iterator_impl
+    class CEPH_BUFFER_API iterator_impl
       : public std::iterator<std::forward_iterator_tag, char> {
     protected:
       typedef typename std::conditional<is_const,
@@ -325,6 +323,14 @@ namespace buffer CEPH_BUFFER_API {
       void copy(unsigned len, list &dest);
       void copy(unsigned len, std::string &dest);
       void copy_all(list &dest);
+
+      // get a pointer to the currenet iterator position, return the
+      // number of bytes we can read from that position (up to want),
+      // and advance the iterator by that amount.
+      size_t get_ptr_and_advance(size_t want, const char **p);
+
+      /// calculate crc from iterator position
+      uint32_t crc32c(size_t length, uint32_t crc);
 
       friend bool operator==(const iterator_impl& lhs,
 			     const iterator_impl& rhs) {
@@ -438,6 +444,8 @@ namespace buffer CEPH_BUFFER_API {
     bool is_page_aligned() const;
     bool is_n_align_sized(unsigned align) const;
     bool is_n_page_sized() const;
+    bool is_aligned_size_and_memory(unsigned align_size,
+				    unsigned align_memory) const;
 
     bool is_zero() const;
 
@@ -485,10 +493,10 @@ namespace buffer CEPH_BUFFER_API {
     bool is_contiguous() const;
     void rebuild();
     void rebuild(ptr& nb);
-    void rebuild_aligned(unsigned align);
-    void rebuild_aligned_size_and_memory(unsigned align_size,
+    bool rebuild_aligned(unsigned align);
+    bool rebuild_aligned_size_and_memory(unsigned align_size,
 					 unsigned align_memory);
-    void rebuild_page_aligned();
+    bool rebuild_page_aligned();
 
     // assignment-op with move semantics
     const static unsigned int CLAIM_DEFAULT = 0;
@@ -575,7 +583,7 @@ namespace buffer CEPH_BUFFER_API {
     void decode_base64(list& o);
 
     void write_stream(std::ostream &out) const;
-    void hexdump(std::ostream &out) const;
+    void hexdump(std::ostream &out, bool trailing_newline = true) const;
     int read_file(const char *fn, std::string *error);
     ssize_t read_fd(int fd, size_t len);
     int read_fd_zero_copy(int fd, size_t len);

@@ -9,9 +9,11 @@
 #include "librbd/ImageCtx.h"
 #include "librbd/ImageState.h"
 #include "librbd/ImageWatcher.h"
+#include "librbd/ObjectMap.h"
 #include "librbd/Utils.h"
 #include "librbd/operation/FlattenRequest.h"
 #include "librbd/operation/RebuildObjectMapRequest.h"
+#include "librbd/operation/ObjectMapIterate.h"
 #include "librbd/operation/RenameRequest.h"
 #include "librbd/operation/ResizeRequest.h"
 #include "librbd/operation/SnapshotCreateRequest.h"
@@ -273,6 +275,18 @@ struct C_InvokeAsyncRequest : public Context {
   }
 };
 
+template <typename I>
+bool needs_invalidate(I& image_ctx, uint64_t object_no,
+		     uint8_t current_state, uint8_t new_state) {
+  if ( (current_state == OBJECT_EXISTS ||
+	current_state == OBJECT_EXISTS_CLEAN) &&
+       (new_state == OBJECT_NONEXISTENT ||
+	new_state == OBJECT_PENDING)) {
+    return false;
+  }
+  return true;
+}
+
 } // anonymous namespace
 
 template <typename I>
@@ -412,6 +426,7 @@ void Operations<I>::execute_rebuild_object_map(ProgressContext &prog_ctx,
     return;
   }
   if (!m_image_ctx.test_features(RBD_FEATURE_OBJECT_MAP)) {
+    lderr(cct) << "image must support object-map feature" << dendl;
     on_finish->complete(-EINVAL);
     return;
   }
@@ -420,6 +435,48 @@ void Operations<I>::execute_rebuild_object_map(ProgressContext &prog_ctx,
     new operation::RebuildObjectMapRequest<I>(
       m_image_ctx, new C_NotifyUpdate<I>(m_image_ctx, on_finish), prog_ctx);
   req->send();
+}
+
+template <typename I>
+int Operations<I>::check_object_map(ProgressContext &prog_ctx) {
+  CephContext *cct = m_image_ctx.cct;
+  ldout(cct, 5) << this << " " << __func__ << dendl;
+  int r = m_image_ctx.state->refresh_if_required();
+  if (r < 0) {
+    return r;
+  }
+
+  r = invoke_async_request("check object map", true,
+                           boost::bind(&Operations<I>::check_object_map, this,
+                                       boost::ref(prog_ctx), _1),
+			   [] (Context *c) { c->complete(-EOPNOTSUPP); });
+
+  return r;
+}
+
+template <typename I>
+void Operations<I>::object_map_iterate(ProgressContext &prog_ctx,
+				       operation::ObjectIterateWork<I> handle_mismatch,
+				       Context *on_finish) {
+  assert(m_image_ctx.owner_lock.is_locked());
+  assert(m_image_ctx.exclusive_lock == nullptr ||
+         m_image_ctx.exclusive_lock->is_lock_owner());
+
+  if (!m_image_ctx.test_features(RBD_FEATURE_OBJECT_MAP)) {
+    on_finish->complete(-EINVAL);
+    return;
+  }
+
+  operation::ObjectMapIterateRequest<I> *req =
+    new operation::ObjectMapIterateRequest<I>(m_image_ctx, on_finish,
+					      prog_ctx, handle_mismatch);
+  req->send();
+}
+
+template <typename I>
+void Operations<I>::check_object_map(ProgressContext &prog_ctx,
+				     Context *on_finish) {
+  object_map_iterate(prog_ctx, needs_invalidate, on_finish);
 }
 
 template <typename I>
@@ -499,6 +556,12 @@ int Operations<I>::resize(uint64_t size, ProgressContext& prog_ctx) {
     return r;
   }
 
+  if (m_image_ctx.test_features(RBD_FEATURE_OBJECT_MAP) &&
+      !ObjectMap::is_compatible(m_image_ctx.layout, size)) {
+    lderr(cct) << "New size not compatible with object map" << dendl;
+    return -EINVAL;
+  }
+
   uint64_t request_id = ++m_async_request_seq;
   r = invoke_async_request("resize", false,
                            boost::bind(&Operations<I>::execute_resize, this,
@@ -525,12 +588,16 @@ void Operations<I>::execute_resize(uint64_t size, ProgressContext &prog_ctx,
   ldout(cct, 5) << this << " " << __func__ << ": "
                 << "size=" << m_image_ctx.size << ", "
                 << "new_size=" << size << dendl;
-  m_image_ctx.snap_lock.put_read();
 
-  m_image_ctx.snap_lock.get_read();
   if (m_image_ctx.snap_id != CEPH_NOSNAP || m_image_ctx.read_only) {
     m_image_ctx.snap_lock.put_read();
     on_finish->complete(-EROFS);
+    return;
+  } else if (m_image_ctx.test_features(RBD_FEATURE_OBJECT_MAP,
+                                       m_image_ctx.snap_lock) &&
+             !ObjectMap::is_compatible(m_image_ctx.layout, size)) {
+    m_image_ctx.snap_lock.put_read();
+    on_finish->complete(-EINVAL);
     return;
   }
   m_image_ctx.snap_lock.put_read();
@@ -585,7 +652,8 @@ void Operations<I>::snap_create(const char *snap_name, Context *on_finish) {
 
   C_InvokeAsyncRequest<I> *req = new C_InvokeAsyncRequest<I>(
     m_image_ctx, "snap_create", true,
-    boost::bind(&Operations<I>::execute_snap_create, this, snap_name, _1, 0),
+    boost::bind(&Operations<I>::execute_snap_create, this, snap_name, _1, 0,
+                false),
     boost::bind(&ImageWatcher::notify_snap_create, m_image_ctx.image_watcher,
                 snap_name, _1),
     {-EEXIST}, on_finish);
@@ -595,7 +663,8 @@ void Operations<I>::snap_create(const char *snap_name, Context *on_finish) {
 template <typename I>
 void Operations<I>::execute_snap_create(const char *snap_name,
                                         Context *on_finish,
-                                        uint64_t journal_op_tid) {
+                                        uint64_t journal_op_tid,
+                                        bool skip_object_map) {
   assert(m_image_ctx.owner_lock.is_locked());
   assert(m_image_ctx.exclusive_lock == nullptr ||
          m_image_ctx.exclusive_lock->is_lock_owner());
@@ -607,7 +676,7 @@ void Operations<I>::execute_snap_create(const char *snap_name,
   operation::SnapshotCreateRequest<I> *req =
     new operation::SnapshotCreateRequest<I>(
       m_image_ctx, new C_NotifyUpdate<I>(m_image_ctx, on_finish), snap_name,
-      journal_op_tid);
+      journal_op_tid, skip_object_map);
   req->send();
 }
 

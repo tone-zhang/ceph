@@ -98,17 +98,13 @@ class WeightedPriorityQueue :  public OpQueue <T, K>
       unsigned get_size() const {
 	return lp.size();
       }
-      unsigned filter_list_pairs(std::function<bool (T)>& f,
-        std::list<T>* out) {
+      unsigned filter_list_pairs(std::function<bool (T)>& f) {
         unsigned count = 0;
         // intrusive containers can't erase with a reverse_iterator
         // so we have to walk backwards on our own. Since there is
         // no iterator before begin, we have to test at the end.
         for (Lit i = --lp.end();; --i) {
           if (f(i->item)) {
-            if (out) {
-	      out->push_front(i->item);
-            }
             i = lp.erase_and_dispose(i, DelItem<ListPair>());
             ++count;
           }
@@ -182,13 +178,13 @@ class WeightedPriorityQueue :  public OpQueue <T, K>
         check_end();
 	return ret;
       }
-      unsigned filter_list_pairs(std::function<bool (T)>& f, std::list<T>* out) {
+      unsigned filter_list_pairs(std::function<bool (T)>& f) {
 	unsigned count = 0;
         // intrusive containers can't erase with a reverse_iterator
         // so we have to walk backwards on our own. Since there is
         // no iterator before begin, we have to test at the end.
         for (Kit i = klasses.begin(); i != klasses.end();) {
-          count += i->filter_list_pairs(f, out);
+          count += i->filter_list_pairs(f);
           if (i->empty()) {
 	    if (next == i) {
 	      ++next;
@@ -291,9 +287,9 @@ class WeightedPriorityQueue :  public OpQueue <T, K>
 	  }
 	  return ret;
 	}
-	void filter_list_pairs(std::function<bool (T)>& f, std::list<T>* out) {
+       void filter_list_pairs(std::function<bool (T)>& f) {
 	  for (Sit i = queues.begin(); i != queues.end();) {
-      	    size -= i->filter_list_pairs(f, out);
+            size -= i->filter_list_pairs(f);
 	    if (i->empty()) {
 	      total_prio -= i->key;
 	      i = queues.erase_and_dispose(i, DelItem<SubQueue>());
@@ -338,9 +334,9 @@ class WeightedPriorityQueue :  public OpQueue <T, K>
     unsigned length() const override final {
       return strict.size + normal.size;
     }
-    void remove_by_filter(std::function<bool (T)> f, std::list<T>* removed = 0) override final {
-      strict.filter_list_pairs(f, removed);
-      normal.filter_list_pairs(f, removed);
+    void remove_by_filter(std::function<bool (T)> f) override final {
+      strict.filter_list_pairs(f);
+      normal.filter_list_pairs(f);
     }
     void remove_by_class(K cl, std::list<T>* removed = 0) override final {
       strict.filter_class(cl, removed);
@@ -361,14 +357,14 @@ class WeightedPriorityQueue :  public OpQueue <T, K>
     void enqueue_front(K cl, unsigned p, unsigned cost, T item) override final {
       normal.insert(p, cl, cost, item, true);
     }
-    T dequeue() {
+    T dequeue() override {
       assert(strict.size + normal.size > 0);
       if (!strict.empty()) {
 	return strict.pop(true);
       }
       return normal.pop();
     }
-    void dump(ceph::Formatter *f) const {
+    void dump(ceph::Formatter *f) const override {
       f->open_array_section("high_queues");
       strict.dump(f);
       f->close_section();

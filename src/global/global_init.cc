@@ -12,29 +12,22 @@
  *
  */
 
-#include "common/Thread.h"
 #include "common/ceph_argparse.h"
 #include "common/code_environment.h"
-#include "common/common_init.h"
 #include "common/config.h"
 #include "common/debug.h"
 #include "common/errno.h"
-#include "common/safe_io.h"
 #include "common/signal.h"
 #include "common/version.h"
-#include "common/admin_socket.h"
 #include "global/global_context.h"
 #include "global/global_init.h"
 #include "global/pidfile.h"
 #include "global/signal_handler.h"
 #include "include/compat.h"
-#include "include/color.h"
 
 #include <pwd.h>
 #include <grp.h>
-
 #include <errno.h>
-#include <deque>
 
 #define dout_subsys ceph_subsys_
 
@@ -321,6 +314,8 @@ void global_init(std::vector < const char * > *alt_def_args,
 
   if (code_env == CODE_ENVIRONMENT_DAEMON && !(flags & CINIT_FLAG_NO_DAEMON_ACTIONS))
     output_ceph_version();
+
+  g_ceph_context->crush_location.init_on_startup();
 }
 
 void global_print_banner(void)

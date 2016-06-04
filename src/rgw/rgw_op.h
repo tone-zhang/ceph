@@ -233,10 +233,7 @@ public:
 
     bool verify_permission(RGWBucketInfo& binfo,
                            map<string, bufferlist>& battrs,
-                           rgw_obj& obj,
                            ACLOwner& bucket_owner /* out */);
-    bool verify_permission(RGWBucketInfo& binfo,
-                           map<string, bufferlist>& battrs);
     bool delete_single(const acct_path_t& path);
     bool delete_chunk(const std::list<acct_path_t>& paths);
   };
@@ -748,16 +745,26 @@ public:
 
 class RGWPutMetadataAccount : public RGWOp {
 protected:
-  set<string> rmattr_names;
+  std::set<std::string> rmattr_names;
+  std::map<std::string, bufferlist> attrs, orig_attrs;
+  std::map<int, std::string> temp_url_keys;
+  RGWQuotaInfo new_quota;
+  bool new_quota_extracted;
+
+  RGWObjVersionTracker acct_op_tracker;
+
   RGWAccessControlPolicy policy;
 
 public:
-  RGWPutMetadataAccount() {}
+  RGWPutMetadataAccount()
+    : new_quota_extracted(false) {
+  }
 
   virtual void init(RGWRados *store, struct req_state *s, RGWHandler *h) {
     RGWOp::init(store, s, h);
     policy.set_ctx(s->cct);
   }
+  int init_processing();
   int verify_permission();
   void pre_exec() { }
   void execute();
@@ -767,7 +774,6 @@ public:
   virtual void filter_out_temp_url(map<string, bufferlist>& add_attrs,
                                    const set<string>& rmattr_names,
                                    map<int, string>& temp_url_keys);
-  virtual int handle_temp_url_update(const map<int, string>& temp_url_keys);
   virtual const string name() { return "put_account_metadata"; }
   virtual RGWOpType get_type() { return RGW_OP_PUT_METADATA_ACCOUNT; }
   virtual uint32_t op_mask() { return RGW_OP_TYPE_WRITE; }
@@ -1372,12 +1378,13 @@ static inline int put_data_and_throttle(RGWPutObjProcessor *processor,
 
   do {
     void *handle;
+    rgw_obj obj;
 
-    int ret = processor->handle_data(data, ofs, hash, &handle, &again);
+    int ret = processor->handle_data(data, ofs, hash, &handle, &obj, &again);
     if (ret < 0)
       return ret;
 
-    ret = processor->throttle_data(handle, need_to_wait);
+    ret = processor->throttle_data(handle, obj, need_to_wait);
     if (ret < 0)
       return ret;
 

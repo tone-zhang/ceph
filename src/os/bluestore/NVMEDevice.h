@@ -35,7 +35,6 @@
 enum class IOCommand {
   READ_COMMAND,
   WRITE_COMMAND,
-  ZERO_COMMAND,
   FLUSH_COMMAND
 };
 
@@ -110,7 +109,7 @@ class NVMEDevice : public BlockDevice {
           }
           ++it;
         } else {
-          assert(it->first > off) ;
+          assert(it->first > off);
           if (extent_it_end > end) {
             //  <-     data    ->
             //      <-           it          ->
@@ -227,9 +226,7 @@ class NVMEDevice : public BlockDevice {
 
   int aio_write(uint64_t off, bufferlist& bl,
                 IOContext *ioc,
-                bool buffered) override ;
-  int aio_zero(uint64_t off, uint64_t len,
-               IOContext *ioc) override;
+                bool buffered) override;
   int flush() override;
   int read_buffered(uint64_t off, uint64_t len, char *buf) override;
 

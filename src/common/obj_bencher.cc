@@ -15,6 +15,7 @@
  * try and bench on a pool you don't have permission to access
  * it will just loop forever.
  */
+#include "include/compat.h"
 #include "common/Cond.h"
 #include "obj_bencher.h"
 
@@ -813,7 +814,7 @@ int ObjBencher::seq_read_bench(int seconds_to_run, int num_objects, int concurre
        << "Read size:            " << data.op_size << std::endl
        << "Object size:          " << data.object_size << std::endl
        << "Bandwidth (MB/sec):   " << setprecision(6) << bandwidth << std::endl
-       << "Average IOPS          " << (int)(data.finished/runtime) << std::endl
+       << "Average IOPS:         " << (int)(data.finished/runtime) << std::endl
        << "Stddev IOPS:          " << vec_stddev(data.history.iops) << std::endl
        << "Max IOPS:             " << data.idata.max_iops << std::endl
        << "Min IOPS:             " << data.idata.min_iops << std::endl

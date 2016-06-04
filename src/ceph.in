@@ -88,7 +88,7 @@ elif os.path.exists(os.path.join(os.getcwd(), "CMakeCache.txt")) \
      and os.path.exists(os.path.join(os.getcwd(), "bin/init-ceph")):
     src_path = None
     for l in open("./CMakeCache.txt").readlines():
-        if l.startswith("Ceph_SOURCE_DIR:STATIC="):
+        if l.startswith("ceph_SOURCE_DIR:STATIC="):
             src_path = l.split("=")[1].strip()
 
 
@@ -892,7 +892,7 @@ def main():
 
         if ret < 0:
             ret = -ret
-            print('Error {0}: {1}'.format(errno.errorcode.get(ret, 'Unknown'), outs), file=sys.stderr)
+            print(u'Error {0}: {1}'.format(errno.errorcode.get(ret, 'Unknown'), outs), file=sys.stderr)
             if len(targets) > 1:
                 final_ret = ret
             else:

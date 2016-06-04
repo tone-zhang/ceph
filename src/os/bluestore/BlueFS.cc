@@ -8,8 +8,6 @@
 #include "common/perf_counters.h"
 #include "BlockDevice.h"
 #include "Allocator.h"
-#include "StupidAllocator.h"
-
 
 #define dout_subsys ceph_subsys_bluefs
 #undef dout_prefix
@@ -29,6 +27,10 @@ BlueFS::BlueFS()
 
 BlueFS::~BlueFS()
 {
+  for (auto p : ioc) {
+    if (p)
+      p->aio_wait();
+  }
   for (auto p : bdev) {
     if (p) {
       p->close();
@@ -280,9 +282,11 @@ void BlueFS::_init_alloc()
   dout(20) << __func__ << dendl;
   alloc.resize(MAX_BDEV);
   for (unsigned id = 0; id < bdev.size(); ++id) {
-    if (!bdev[id])
+    if (!bdev[id]) {
       continue;
-    alloc[id] = new StupidAllocator;
+    }
+    assert(bdev[id]->get_size());
+    alloc[id] = Allocator::create(g_conf->bluestore_allocator, bdev[id]->get_size());
     interval_set<uint64_t>& p = block_all[id];
     for (interval_set<uint64_t>::iterator q = p.begin(); q != p.end(); ++q) {
       alloc[id]->init_add_free(q.get_start(), q.get_len());
@@ -378,7 +382,6 @@ int BlueFS::_write_super()
   ::encode(crc, bl);
   assert(bl.length() <= get_super_length());
   bl.append_zero(get_super_length() - bl.length());
-  bl.rebuild();
 
   IOContext ioc(NULL);
   bdev[BDEV_DB]->aio_write(get_super_offset(), bl, &ioc, false);

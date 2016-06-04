@@ -281,6 +281,22 @@ namespace librados
   };
 
   /*
+   * Alloc hint flags for the alloc_hint operation.
+   */
+  enum AllocHintFlags {
+    ALLOC_HINT_SEQUENTIAL_WRITE = 1,
+    ALLOC_HINT_RANDOM_WRITE = 2,
+    ALLOC_HINT_FLAG_SEQUENTIAL_READ = 4,
+    ALLOC_HINT_FLAG_RANDOM_READ = 8,
+    ALLOC_HINT_FLAG_APPEND_ONLY = 16,
+    ALLOC_HINT_FLAG_IMMUTABLE = 32,
+    ALLOC_HINT_FLAG_SHORTLIVED = 64,
+    ALLOC_HINT_FLAG_LONGLIVED = 128,
+    ALLOC_HINT_FLAG_COMPRESSIBLE = 256,
+    ALLOC_HINT_FLAG_INCOMPRESSIBLE = 512,
+  };
+
+  /*
    * ObjectOperation : compound object operation
    * Batch multiple object operations into a single request, to be applied
    * atomically.
@@ -448,9 +464,13 @@ namespace librados
      *
      * @param expected_object_size expected size of the object, in bytes
      * @param expected_write_size expected size of writes to the object, in bytes
+     * @param flags flags ()
      */
     void set_alloc_hint(uint64_t expected_object_size,
                         uint64_t expected_write_size);
+    void set_alloc_hint2(uint64_t expected_object_size,
+			 uint64_t expected_write_size,
+			 uint32_t flags);
 
     /**
      * Pin/unpin an object in cache tier
@@ -1082,6 +1102,10 @@ namespace librados
     int set_alloc_hint(const std::string& o,
                        uint64_t expected_object_size,
                        uint64_t expected_write_size);
+    int set_alloc_hint2(const std::string& o,
+			uint64_t expected_object_size,
+			uint64_t expected_write_size,
+			uint32_t flags);
 
     // assert version for next sync operations
     void set_assert_version(uint64_t ver);
@@ -1189,7 +1213,7 @@ namespace librados
     // Features useful for test cases
     void test_blacklist_self(bool set);
 
-    /* listing objects */
+    /* pool info */
     int pool_list(std::list<std::string>& v);
     int pool_list2(std::list<std::pair<int64_t, std::string> >& v);
     int get_pool_stats(std::list<std::string>& v,
@@ -1201,6 +1225,9 @@ namespace librados
     int get_pool_stats(std::list<std::string>& v,
                        std::string& category,
 		       std::map<std::string, stats_map>& stats);
+    /// check if pool has selfmanaged snaps
+    bool get_pool_is_selfmanaged_snaps_mode(const std::string& poolname);
+
     int cluster_stat(cluster_stat_t& result);
     int cluster_fsid(std::string *fsid);
 

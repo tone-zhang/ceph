@@ -103,6 +103,7 @@ void _usage()
   cout << "  zonegroup get              show zone group info\n";
   cout << "  zonegroup modify           modify an existing zonegroup\n";
   cout << "  zonegroup set              set zone group info (requires infile)\n";
+  cout << "  zonegroup remove           remove a zone from a zonegroup\n";
   cout << "  zonegroup rename           rename a zone group\n";
   cout << "  zonegroup list             list all zone groups set on this cluster\n";
   cout << "  zonegroup-map get          show zonegroup-map\n";
@@ -125,8 +126,6 @@ void _usage()
   cout << "  log rm                     remove log object\n";
   cout << "  usage show                 show usage (by user, date range)\n";
   cout << "  usage trim                 trim usage (by user, date range)\n";
-  cout << "  temp remove                remove temporary objects that were created up to\n";
-  cout << "                             specified date (and optional time)\n";
   cout << "  gc list                    dump expired garbage collection objects (specify\n";
   cout << "                             --include-all to list all entries, including unexpired)\n";
   cout << "  gc process                 manually process garbage\n";
@@ -184,7 +183,7 @@ void _usage()
   cout << "                               replica mdlog get/delete\n";
   cout << "                               replica datalog get/delete\n";
   cout << "   --metadata-key=<key>      key to retrieve metadata from with metadata get\n";
-  cout << "   --remote=<remote>         remote to pull period\n";
+  cout << "   --remote=<remote>         zone or zonegroup id of remote gateway\n";
   cout << "   --period=<id>             period id\n";
   cout << "   --epoch=<number>          period epoch\n";
   cout << "   --commit                  commit the period during 'period update'\n";
@@ -192,14 +191,14 @@ void _usage()
   cout << "   --master-url              master url\n";
   cout << "   --master-zonegroup=<id>   master zonegroup id\n";
   cout << "   --master-zone=<id>        master zone id\n";
-  cout << "   --rgw-realm=<realm>       realm name\n";
-  cout << "   --realm-id=<realm id>     realm id\n";
-  cout << "   --realm-new-name=<realm new name> realm new name\n";
-  cout << "   --rgw-zonegroup=<zonegroup>   zonegroup name\n";
-  cout << "   --zonegroup-id=<zonegroup id> zonegroup id\n";
-  cout << "   --rgw-zone=<zone>         name of zone in which radosgw is running\n";
-  cout << "   --zone-id=<zone id>       zone id\n";
-  cout << "   --zone-new-name=<zone>    zone new name\n";
+  cout << "   --rgw-realm=<name>        realm name\n";
+  cout << "   --realm-id=<id>           realm id\n";
+  cout << "   --realm-new-name=<name>   realm new name\n";
+  cout << "   --rgw-zonegroup=<name>    zonegroup name\n";
+  cout << "   --zonegroup-id=<id>       zonegroup id\n";
+  cout << "   --rgw-zone=<name>         name of zone in which radosgw is running\n";
+  cout << "   --zone-id=<id>            zone id\n";
+  cout << "   --zone-new-name=<name>    zone new name\n";
   cout << "   --source-zone             specify the source zone (for data sync)\n";
   cout << "   --default                 set entity (realm, zonegroup, zone) as default\n";
   cout << "   --read-only               set zone as read-only (when adding to zonegroup)\n";
@@ -234,7 +233,7 @@ void _usage()
   cout << "\nQuota options:\n";
   cout << "   --bucket                  specified bucket for quota command\n";
   cout << "   --max-objects             specify max objects (negative value to disable)\n";
-  cout << "   --max-size                specify max size (in bytes, negative value to disable)\n";
+  cout << "   --max-size                specify max size (in B/K/M/G/T, negative value to disable)\n";
   cout << "   --quota-scope             scope of quota (bucket, user)\n";
   cout << "\nOrphans search options:\n";
   cout << "   --pool                    data pool to scan for leaked rados objects in\n";
@@ -313,7 +312,8 @@ enum {
   OPT_ZONEGROUP_MODIFY,
   OPT_ZONEGROUP_SET,
   OPT_ZONEGROUP_LIST,
-  OPT_ZONEGROUP_RENAME ,  
+  OPT_ZONEGROUP_REMOVE,
+  OPT_ZONEGROUP_RENAME,
   OPT_ZONEGROUPMAP_GET,
   OPT_ZONEGROUPMAP_SET,
   OPT_ZONEGROUPMAP_UPDATE,
@@ -411,7 +411,6 @@ static int get_cmd(const char *cmd, const char *prev_cmd, const char *prev_prev_
       strcmp(cmd, "replicalog") == 0 ||
       strcmp(cmd, "subuser") == 0 ||
       strcmp(cmd, "sync") == 0 ||
-      strcmp(cmd, "temp") == 0 ||
       strcmp(cmd, "usage") == 0 ||
       strcmp(cmd, "user") == 0 ||
       strcmp(cmd, "zone") == 0 ||
@@ -600,6 +599,8 @@ static int get_cmd(const char *cmd, const char *prev_cmd, const char *prev_prev_
       return OPT_ZONEGROUP_LIST;
     if (strcmp(cmd, "set") == 0)
       return OPT_ZONEGROUP_SET;
+    if (strcmp(cmd, "remove") == 0)
+      return OPT_ZONEGROUP_REMOVE;
     if (strcmp(cmd, "rename") == 0)
       return OPT_ZONEGROUP_RENAME;
   } else if (strcmp(prev_cmd, "quota") == 0) {
@@ -810,8 +811,10 @@ static void dump_bucket_usage(map<RGWObjCategory, RGWStorageStats>& stats, Forma
     RGWStorageStats& s = iter->second;
     const char *cat_name = rgw_obj_category_name(iter->first);
     formatter->open_object_section(cat_name);
-    formatter->dump_int("size_kb", s.num_kb);
-    formatter->dump_int("size_kb_actual", s.num_kb_rounded);
+    formatter->dump_int("size", s.size);
+    formatter->dump_int("size_actual", s.size_rounded);
+    formatter->dump_int("size_kb", rgw_rounded_kb(s.size));
+    formatter->dump_int("size_kb_actual", rgw_rounded_kb(s.size_rounded));
     formatter->dump_int("num_objects", s.num_objects);
     formatter->close_section();
     formatter->flush(cout);
@@ -1026,13 +1029,17 @@ void set_quota_info(RGWQuotaInfo& quota, int opt_cmd, int64_t max_size, int64_t 
 
     case OPT_QUOTA_SET:
       if (have_max_objects) {
-        quota.max_objects = max_objects;
+        if (max_objects < 0) {
+          quota.max_objects = -1;
+        } else {
+          quota.max_objects = max_objects;
+        }
       }
       if (have_max_size) {
         if (max_size < 0) {
-          quota.max_size_kb = -1;
+          quota.max_size = -1;
         } else {
-          quota.max_size_kb = rgw_rounded_kb(max_size);
+          quota.max_size = rgw_rounded_kb(max_size) * 1024;
         }
       }
       break;
@@ -1322,10 +1329,16 @@ static int send_to_remote_gateway(const string& remote, req_info& info,
     }
     conn = store->rest_master_conn;
   } else {
+    // check zonegroups
     auto iter = store->zonegroup_conn_map.find(remote);
     if (iter == store->zonegroup_conn_map.end()) {
-      cerr << "could not find connection to: " << remote << std::endl;
-      return -ENOENT;
+      // check zones
+      iter = store->zone_conn_map.find(remote);
+      if (iter == store->zone_conn_map.end()) {
+        cerr << "could not find connection for zone or zonegroup id: "
+            << remote << std::endl;
+        return -ENOENT;
+      }
     }
     conn = iter->second;
   }
@@ -1352,7 +1365,7 @@ static int send_to_url(const string& url, const string& access,
   key.id = access;
   key.key = secret;
 
-  list<pair<string, string> > params;
+  param_vec_t params;
   RGWRESTSimpleRequest req(g_ceph_context, url, NULL, &params);
 
   bufferlist response;
@@ -1378,7 +1391,7 @@ static int send_to_remote_or_url(const string& remote, const string& url,
 }
 
 static int commit_period(RGWRealm& realm, RGWPeriod& period,
-                         const string& remote, const string& url,
+                         string remote, const string& url,
                          const string& access, const string& secret)
 {
   const string& master_zone = period.get_master_zone();
@@ -1402,6 +1415,12 @@ static int commit_period(RGWRealm& realm, RGWPeriod& period,
       cerr << "failed to commit period: " << cpp_strerror(-ret) << std::endl;
     }
     return ret;
+  }
+
+  if (remote.empty() && url.empty()) {
+    // use the new master zone's connection
+    remote = master_zone;
+    cout << "Sending period to new master zone " << remote << std::endl;
   }
 
   // push period to the master with an empty period id
@@ -1990,6 +2009,7 @@ int main(int argc, char **argv)
   int remove_bad = false;
   int check_head_obj_locator = false;
   int max_buckets = -1;
+  bool max_buckets_specified = false;
   map<string, bool> categories;
   string caps;
   int check_objects = false;
@@ -2128,6 +2148,7 @@ int main(int argc, char **argv)
         cerr << "ERROR: failed to parse max buckets: " << err << std::endl;
         return EINVAL;
       }
+      max_buckets_specified = true;
     } else if (ceph_argparse_witharg(args, i, &val, "--max-entries", (char*)NULL)) {
       max_entries = (int)strict_strtol(val.c_str(), 10, &err);
       if (!err.empty()) {
@@ -2135,7 +2156,7 @@ int main(int argc, char **argv)
         return EINVAL;
       }
     } else if (ceph_argparse_witharg(args, i, &val, "--max-size", (char*)NULL)) {
-      max_size = (int64_t)strict_strtoll(val.c_str(), 10, &err);
+      max_size = strict_si_cast<int64_t>(val.c_str(), &err);
       if (!err.empty()) {
         cerr << "ERROR: failed to parse max size: " << err << std::endl;
         return EINVAL;
@@ -2401,6 +2422,7 @@ int main(int argc, char **argv)
 			 opt_cmd == OPT_ZONEGROUP_GET || opt_cmd == OPT_ZONEGROUP_LIST ||  
                          opt_cmd == OPT_ZONEGROUP_SET || opt_cmd == OPT_ZONEGROUP_DEFAULT ||
 			 opt_cmd == OPT_ZONEGROUP_RENAME || opt_cmd == OPT_ZONEGROUP_MODIFY ||
+			 opt_cmd == OPT_ZONEGROUP_REMOVE ||
                          opt_cmd == OPT_ZONEGROUPMAP_GET || opt_cmd == OPT_ZONEGROUPMAP_SET ||
                          opt_cmd == OPT_ZONEGROUPMAP_UPDATE ||
 			 opt_cmd == OPT_ZONE_CREATE || opt_cmd == OPT_ZONE_DELETE ||
@@ -2869,6 +2891,9 @@ int main(int argc, char **argv)
 	       << cpp_strerror(-ret) << std::endl;
 	  return ret;
 	}
+
+        encode_json("zonegroup", zonegroup, formatter);
+        formatter->flush(cout);
       }
       break;
     case OPT_ZONEGROUP_CREATE:
@@ -3040,6 +3065,9 @@ int main(int argc, char **argv)
             cerr << "failed to set zonegroup " << zonegroup_name << " as default: " << cpp_strerror(-ret) << std::endl;
           }
         }
+
+        encode_json("zonegroup", zonegroup, formatter);
+        formatter->flush(cout);
       }
       break;
     case OPT_ZONEGROUP_SET:
@@ -3085,6 +3113,44 @@ int main(int argc, char **argv)
 
 	encode_json("zonegroup", zonegroup, formatter);
 	formatter->flush(cout);
+      }
+      break;
+    case OPT_ZONEGROUP_REMOVE:
+      {
+        RGWZoneGroup zonegroup(zonegroup_id, zonegroup_name);
+        int ret = zonegroup.init(g_ceph_context, store);
+        if (ret < 0) {
+          cerr << "failed to init zonegroup: " << cpp_strerror(-ret) << std::endl;
+          return -ret;
+        }
+
+        if (zone_id.empty()) {
+          if (zone_name.empty()) {
+            cerr << "no --zone-id or --rgw-zone name provided" << std::endl;
+            return EINVAL;
+          }
+          // look up zone id by name
+          for (auto& z : zonegroup.zones) {
+            if (zone_name == z.second.name) {
+              zone_id = z.second.id;
+              break;
+            }
+          }
+          if (zone_id.empty()) {
+            cerr << "zone name " << zone_name << " not found in zonegroup "
+                << zonegroup.get_name() << std::endl;
+            return ENOENT;
+          }
+        }
+
+        ret = zonegroup.remove_zone(zone_id);
+        if (ret < 0) {
+          cerr << "failed to remove zone: " << cpp_strerror(-ret) << std::endl;
+          return -ret;
+        }
+
+        encode_json("zonegroup", zonegroup, formatter);
+        formatter->flush(cout);
       }
       break;
     case OPT_ZONEGROUP_RENAME:
@@ -3220,12 +3286,6 @@ int main(int argc, char **argv)
 	}
 
 	if (!zonegroup_id.empty() || !zonegroup_name.empty()) {
-	  RGWRealm realm(realm_id, realm_name);
-	  ret = realm.init(g_ceph_context, store);
-	  if (ret < 0) {
-	    cerr << "ERROR: couldn't init realm:" << cpp_strerror(-ret) << std::endl;
-	    return ret;
-	  }
 	  ret = zonegroup.add_zone(zone,
                                    (is_master_set ? &is_master : NULL),
                                    (is_read_only_set ? &read_only : NULL),
@@ -3300,7 +3360,7 @@ int main(int argc, char **argv)
             cerr << "WARNING: failed to initialize zonegroup " << zonegroup_name << std::endl;
             continue;
           }
-          ret = zonegroup.remove_zone(zone);
+          ret = zonegroup.remove_zone(zone.get_id());
           if (ret < 0 && ret != -ENOENT) {
             cerr << "failed to remove zone " << zone_name << " from zonegroup " << zonegroup.get_name() << ": "
               << cpp_strerror(-ret) << std::endl;
@@ -3500,6 +3560,9 @@ int main(int argc, char **argv)
             cerr << "failed to set zone " << zone_name << " as default: " << cpp_strerror(-ret) << std::endl;
           }
         }
+
+        encode_json("zone", zone, formatter);
+        formatter->flush(cout);
       }
       break;
     case OPT_ZONE_RENAME:
@@ -3575,7 +3638,7 @@ int main(int argc, char **argv)
   if (gen_secret_key)
     user_op.set_gen_secret(); // assume that a key pair should be created
 
-  if (max_buckets >= 0)
+  if (max_buckets_specified)
     user_op.set_max_buckets(max_buckets);
 
   if (system_specified)
@@ -3761,7 +3824,8 @@ int main(int argc, char **argv)
       jf.flush(bl);
 
       JSONParser p;
-      ret = send_to_remote_gateway(url, info, bl, p);
+      ret = send_to_remote_or_url(remote, url, access_key, secret_key,
+                                  info, bl, p);
       if (ret < 0) {
         cerr << "request failed: " << cpp_strerror(-ret) << std::endl;
         return ret;

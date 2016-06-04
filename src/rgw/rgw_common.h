@@ -88,6 +88,10 @@ using ceph::crypto::MD5;
 #define RGW_ATTR_TEMPURL_KEY1   RGW_ATTR_META_PREFIX "temp-url-key"
 #define RGW_ATTR_TEMPURL_KEY2   RGW_ATTR_META_PREFIX "temp-url-key-2"
 
+/* Account/container quota of the Swift API. */
+#define RGW_ATTR_QUOTA_NOBJS    RGW_ATTR_META_PREFIX "quota-count"
+#define RGW_ATTR_QUOTA_MSIZE    RGW_ATTR_META_PREFIX "quota-bytes"
+
 #define RGW_ATTR_OLH_PREFIX     RGW_ATTR_PREFIX "olh."
 
 #define RGW_ATTR_OLH_INFO       RGW_ATTR_OLH_PREFIX "info"
@@ -102,7 +106,6 @@ using ceph::crypto::MD5;
 #define RGW_BUCKETS_OBJ_SUFFIX ".buckets"
 
 #define RGW_MAX_PENDING_CHUNKS  16
-#define RGW_MIN_MULTIPART_SIZE (5ULL*1024*1024)
 
 #define RGW_FORMAT_PLAIN        0
 #define RGW_FORMAT_XML          1
@@ -184,6 +187,7 @@ using ceph::crypto::MD5;
 #define ERR_USER_SUSPENDED       2100
 #define ERR_INTERNAL_ERROR       2200
 #define ERR_NOT_IMPLEMENTED      2201
+#define ERR_SERVICE_UNAVAILABLE  2202
 
 #ifndef UINT32_MAX
 #define UINT32_MAX (0xffffffffu)
@@ -535,7 +539,7 @@ struct RGWUserInfo
   map<string, RGWAccessKey> swift_keys;
   map<string, RGWSubUser> subusers;
   __u8 suspended;
-  uint32_t max_buckets;
+  int32_t max_buckets;
   uint32_t op_mask;
   RGWUserCaps caps;
   __u8 system;
@@ -1061,11 +1065,15 @@ WRITE_CLASS_ENCODER(RGWBucketEntryPoint)
 struct RGWStorageStats
 {
   RGWObjCategory category;
-  uint64_t num_kb;
-  uint64_t num_kb_rounded;
+  uint64_t size;
+  uint64_t size_rounded;
   uint64_t num_objects;
 
-  RGWStorageStats() : category(RGW_OBJ_CATEGORY_NONE), num_kb(0), num_kb_rounded(0), num_objects(0) {}
+  RGWStorageStats()
+    : category(RGW_OBJ_CATEGORY_NONE),
+      size(0),
+      size_rounded(0),
+      num_objects(0) {}
 
   void dump(Formatter *f) const;
 };
@@ -1260,7 +1268,7 @@ struct req_state {
 
   /* aws4 auth support */
   bool aws4_auth_needs_complete;
-  rgw_aws4_auth *aws4_auth;
+  unique_ptr<rgw_aws4_auth> aws4_auth;
 
   string canned_acl;
   bool has_acl_header;
@@ -1738,11 +1746,6 @@ inline ostream& operator<<(ostream& out, const rgw_obj &o) {
   return out << o.bucket.name << ":" << o.get_object();
 }
 
-static inline bool str_startswith(const string& str, const string& prefix)
-{
-  return (str.compare(0, prefix.size(), prefix) == 0);
-}
-
 static inline void buf_to_hex(const unsigned char *buf, int len, char *str)
 {
   int i;
@@ -1779,7 +1782,7 @@ static inline int hex_to_buf(const char *hex, char *buf, int len)
       return -EINVAL;
     d = hexdigit(*p);
     if (d < 0)
-      return -d;
+      return d;
     buf[i] += d;
     i++;
     p++;
@@ -1825,6 +1828,11 @@ static inline const char *rgw_obj_category_name(RGWObjCategory category)
 static inline uint64_t rgw_rounded_kb(uint64_t bytes)
 {
   return (bytes + 1023) / 1024;
+}
+
+static inline uint64_t rgw_rounded_objsize(uint64_t bytes)
+{
+  return ((bytes + 4095) & ~4095);
 }
 
 static inline uint64_t rgw_rounded_objsize_kb(uint64_t bytes)

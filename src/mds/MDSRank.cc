@@ -72,7 +72,7 @@ MDSRank::MDSRank(
     suicide_hook(suicide_hook_),
     standby_replaying(false)
 {
-  hb = g_ceph_context->get_heartbeat_map()->add_worker("MDSRank");
+  hb = g_ceph_context->get_heartbeat_map()->add_worker("MDSRank", pthread_self());
 
   finisher = new Finisher(msgr->cct);
 
@@ -251,13 +251,13 @@ void MDSRankDispatcher::shutdown()
 /**
  * Helper for simple callbacks that call a void fn with no args.
  */
-class C_VoidFn : public MDSInternalContext
+class C_MDS_VoidFn : public MDSInternalContext
 {
   typedef void (MDSRank::*fn_ptr)();
   protected:
    fn_ptr fn;
   public:
-  C_VoidFn(MDSRank *mds_, fn_ptr fn_)
+  C_MDS_VoidFn(MDSRank *mds_, fn_ptr fn_)
     : MDSInternalContext(mds_), fn(fn_)
   {
     assert(mds_);
@@ -662,7 +662,10 @@ void MDSRank::_advance_queues()
       old->put();
     } else {
       dout(7) << " processing laggy deferred " << *old << dendl;
-      handle_deferrable_message(old);
+      if (!handle_deferrable_message(old)) {
+        dout(0) << "unrecognized message " << *old << dendl;
+        old->put();
+      }
     }
 
     heartbeat_reset();
@@ -1160,7 +1163,7 @@ void MDSRank::resolve_start()
 
   reopen_log();
 
-  mdcache->resolve_start(new C_VoidFn(this, &MDSRank::resolve_done));
+  mdcache->resolve_start(new C_MDS_VoidFn(this, &MDSRank::resolve_done));
   finish_contexts(g_ceph_context, waiting_for_resolve);
 }
 void MDSRank::resolve_done()
@@ -1177,7 +1180,7 @@ void MDSRank::reconnect_start()
     reopen_log();
   }
 
-  server->reconnect_clients(new C_VoidFn(this, &MDSRank::reconnect_done));
+  server->reconnect_clients(new C_MDS_VoidFn(this, &MDSRank::reconnect_done));
   finish_contexts(g_ceph_context, waiting_for_reconnect);
 }
 void MDSRank::reconnect_done()
@@ -1194,7 +1197,7 @@ void MDSRank::rejoin_joint_start()
 void MDSRank::rejoin_start()
 {
   dout(1) << "rejoin_start" << dendl;
-  mdcache->rejoin_start(new C_VoidFn(this, &MDSRank::rejoin_done));
+  mdcache->rejoin_start(new C_MDS_VoidFn(this, &MDSRank::rejoin_done));
 }
 void MDSRank::rejoin_done()
 {
@@ -1299,7 +1302,7 @@ void MDSRank::boot_create()
 {
   dout(3) << "boot_create" << dendl;
 
-  MDSGatherBuilder fin(g_ceph_context, new C_VoidFn(this, &MDSRank::creating_done));
+  MDSGatherBuilder fin(g_ceph_context, new C_MDS_VoidFn(this, &MDSRank::creating_done));
 
   mdcache->init_layouts();
 

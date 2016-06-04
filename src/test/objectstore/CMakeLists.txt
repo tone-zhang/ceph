@@ -5,6 +5,8 @@ add_executable(ceph_perf_objectstore
 set_target_properties(ceph_perf_objectstore PROPERTIES COMPILE_FLAGS
   ${UNITTEST_CXX_FLAGS})
 target_link_libraries(ceph_perf_objectstore os osdc global ${UNITTEST_LIBS})
+install(TARGETS ceph_perf_objectstore
+  DESTINATION bin)
 
 #ceph_test_objectstore
 add_executable(ceph_test_objectstore
@@ -93,6 +95,13 @@ add_executable(unittest_rocksdb_option EXCLUDE_FROM_ALL
   )
 add_ceph_unittest(unittest_rocksdb_option ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/unittest_rocksdb_option)
 target_link_libraries(unittest_rocksdb_option global os ${BLKID_LIBRARIES})
+
+# unittest_bit_alloc
+add_executable(unittest_bit_alloc EXCLUDE_FROM_ALL
+  BitAllocator_test.cc
+  )
+add_ceph_unittest(unittest_bit_alloc ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/unittest_bit_alloc)
+target_link_libraries(unittest_bit_alloc os global)
 
 # unittest_bluefs
 add_executable(unittest_bluefs EXCLUDE_FROM_ALL 

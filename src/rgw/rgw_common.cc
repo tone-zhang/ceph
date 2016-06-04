@@ -2,6 +2,7 @@
 // vim: ts=8 sw=2 smarttab
 
 #include <errno.h>
+#include <boost/algorithm/string.hpp>
 
 #include "json_spirit/json_spirit.h"
 #include "common/ceph_json.h"
@@ -97,18 +98,6 @@ is_err() const
   return !(http_ret >= 200 && http_ret <= 399);
 }
 
-static bool starts_with(const string& s, const string& prefix) {
-  if (s.size() < prefix.size()) {
-    return false;
-  }
-  for (unsigned int i = 0; i < prefix.size(); ++i) {
-    if (prefix[i] != s[i]) {
-      return false;
-    }
-  }
-  return true;
-}
-
 // The requestURI transferred from the frontend can be abs_path or absoluteURI
 // If it is absoluteURI, we should adjust it to abs_path for the following 
 // S3 authorization and some other processes depending on the requestURI
@@ -117,7 +106,7 @@ static string get_abs_path(const string& request_uri) {
   const static string ABS_PREFIXS[] = {"http://", "https://", "ws://", "wss://"};
   bool isAbs = false;
   for (int i = 0; i < 4; ++i) {
-    if (starts_with(request_uri, ABS_PREFIXS[i])) {
+    if (boost::algorithm::starts_with(request_uri, ABS_PREFIXS[i])) {
       isAbs = true;
       break;
     } 
@@ -213,8 +202,6 @@ req_state::req_state(CephContext* _cct, RGWEnv* e, RGWUserInfo* u)
   http_auth = NULL;
   local_source = false;
 
-  aws4_auth = NULL;
-
   obj_ctx = NULL;
 }
 
@@ -222,7 +209,6 @@ req_state::~req_state() {
   delete formatter;
   delete bucket_acl;
   delete object_acl;
-  delete aws4_auth;
 }
 
 struct str_len {
@@ -850,7 +836,7 @@ void RGWHTTPArgs::get_bool(const char *name, bool *val, bool def_val)
 string RGWHTTPArgs::sys_get(const string& name, bool * const exists)
 {
   const auto iter = sys_val_map.find(name);
-  const bool e = (iter != val_map.end());
+  const bool e = (iter != sys_val_map.end());
 
   if (exists) {
     *exists = e;

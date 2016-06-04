@@ -14,9 +14,10 @@ function check_no_osd_down()
 
 function wait_no_osd_down()
 {
-  for i in $(seq 1 300) ; do
+  max_run=300
+  for i in $(seq 1 $max_run) ; do
     if ! check_no_osd_down ; then
-      echo "waiting for osd(s) to come back up"
+      echo "waiting for osd(s) to come back up ($i/$max_run)"
       sleep 1
     else
       break
@@ -196,11 +197,14 @@ function test_mon_injectargs()
   check_response "osd_enable_op_tracker = 'true'"
   ceph tell osd.0 injectargs -- '--osd_enable_op_tracker --osd_op_history_duration 600' >& $TMPFILE || return 1
   check_response "osd_enable_op_tracker = 'true' osd_op_history_duration = '600'"
-  ceph tell osd.0 injectargs -- '--osd_op_history_duration' >& $TMPFILE || return 1
-  check_response "Option --osd_op_history_duration requires an argument"
+  expect_failure $TMPDIR "Option --osd_op_history_duration requires an argument" \
+                 ceph tell osd.0 injectargs -- '--osd_op_history_duration'
 
   ceph tell osd.0 injectargs -- '--mon-lease 6' >& $TMPFILE || return 1
   check_response "mon_lease = '6' (unchangeable)"
+
+  # osd-scrub-auto-repair-num-errors is an OPT_U32, so -1 is not a valid setting
+  expect_false ceph tell osd.0 injectargs --osd-scrub-auto-repair-num-errors -1
 }
 
 function test_mon_injectargs_SI()
@@ -228,6 +232,7 @@ function test_mon_injectargs_SI()
   ceph tell mon.a injectargs '--mon_pg_warn_min_objects 1G'
   expect_config_value "mon.a" "mon_pg_warn_min_objects" 1073741824
   expect_false ceph tell mon.a injectargs '--mon_pg_warn_min_objects 10F'
+  expect_false ceph tell mon.a injectargs '--mon_globalid_prealloc -1'
   $SUDO ceph daemon mon.a config set mon_pg_warn_min_objects $initial_value
 }
 
@@ -649,6 +654,7 @@ function test_mon_misc()
   ceph_watch_wait "$mymsg"
 
   ceph mon metadata a
+  ceph mon metadata
   ceph node ls
 }
 
@@ -661,9 +667,10 @@ function check_mds_active()
 function wait_mds_active()
 {
   fs_name=$1
-  for i in $(seq 1 300) ; do
+  max_run=300
+  for i in $(seq 1 $max_run) ; do
       if ! check_mds_active $fs_name ; then
-          echo "waiting for an active MDS daemon"
+          echo "waiting for an active MDS daemon ($i/$max_run)"
           sleep 5
       else
           break
@@ -734,6 +741,7 @@ function test_mds_tell()
   for mds_gid in $old_mds_gids ; do
       ceph tell mds.$mds_gid injectargs "--debug-mds 20"
   done
+  expect_false ceph tell mds.a injectargs mds_max_file_recover -1
 
   # Test respawn by rank
   ceph tell mds.0 respawn
@@ -794,6 +802,8 @@ function test_mon_mds()
   for mds_gid in $(get_mds_gids $FS_NAME) ; do
       ceph mds metadata $mds_id
   done
+  ceph mds metadata
+
   # XXX mds fail, but how do you undo it?
   mdsmapfile=$TMPDIR/mdsmap.$$
   current_epoch=$(ceph mds getmap -o $mdsmapfile --no-log-to-stderr 2>&1 | grep epoch | sed 's/.*epoch //')
@@ -1079,19 +1089,38 @@ function test_mon_osd()
   for f in noup nodown noin noout noscrub nodeep-scrub nobackfill norebalance norecover notieragent full sortbitwise
   do
     ceph osd set $f
+    if [[ "$f" == "sortbitwise" ]]; then 
+      expect_failure $TMPDIR "sortbitwise flag is already set"
+    fi
     ceph osd unset $f
+    if [[ "$f" == "full" ]]; then
+      # As full flag gets unset if there wont be any OSD in cluster which is full
+      # Not taking failure as it gets unset by default  
+      expect_failure $TMPDIR "full flag is not set" || return 0
+    fi
   done
   ceph osd set sortbitwise  # new backends cant handle nibblewise
+  expect_failure $TMPDIR "sortbitwise flag is already set"
   expect_false ceph osd set bogus
   expect_false ceph osd unset bogus
+  
+  ceph osd set noout >& $TMPFILE || return 1
+  check_response "set noout"
+  ceph osd set noout >& $TMPFILE || return 1
+  expect_failure $TMPDIR "noout flag is already set"
+  ceph osd unset noout >& $TMPFILE || return 1
+  check_response "unset noout"
+  ceph osd unset noout >& $TMPFILE || return 1
+  expect_failure $TMPDIR "noout flag is not set"
 
   ceph osd set noup
   ceph osd down 0
   ceph osd dump | grep 'osd.0 down'
   ceph osd unset noup
-  for ((i=0; i < 1000; i++)); do
+  max_run=1000
+  for ((i=0; i < $max_run; i++)); do
     if ! ceph osd dump | grep 'osd.0 up'; then
-      echo "waiting for osd.0 to come back up"
+      echo "waiting for osd.0 to come back up ($i/$max_run)"
       sleep 1
     else
       break
@@ -1102,7 +1131,12 @@ function test_mon_osd()
   ceph osd thrash 0
 
   ceph osd dump | grep 'osd.0 up'
+  # ceph osd find expects the OsdName, so both ints and osd.n should work.
   ceph osd find 1
+  ceph osd find osd.1
+  expect_false osd find osd.xyz
+  expect_false osd find xyz
+  expect_false osd find 0.1
   ceph --format plain osd find 1 # falls back to json-pretty
   ceph osd metadata 1 | grep 'distro'
   ceph --format plain osd metadata 1 | grep 'distro' # falls back to json-pretty
@@ -1325,6 +1359,7 @@ function test_mon_pg()
   ceph pg ls
   ceph pg ls 0
   ceph pg ls stale
+  expect_false ceph pg ls scrubq
   ceph pg ls active stale repair recovering
   ceph pg ls 0 active
   ceph pg ls 0 active stale
@@ -1376,7 +1411,7 @@ function test_mon_pg()
 
   ceph osd reweight 0 0.9
   expect_false ceph osd reweight 0 -1
-  ceph osd reweight 0 1
+  ceph osd reweight osd.0 1
 
   ceph osd primary-affinity osd.0 .9
   expect_false ceph osd primary-affinity osd.0 -2
@@ -1384,7 +1419,7 @@ function test_mon_pg()
   ceph osd primary-affinity osd.0 1
 
   ceph osd pg-temp 0.0 0 1 2
-  ceph osd pg-temp 0.0 1 0 2
+  ceph osd pg-temp 0.0 osd.1 osd.0 osd.2
   expect_false ceph osd pg-temp asdf qwer
   expect_false ceph osd pg-temp 0.0 asdf
   expect_false ceph osd pg-temp 0.0
@@ -1668,11 +1703,12 @@ function test_osd_bench()
   # max block size: 2097152   # 2MB
   # duration: 10              # 10 seconds
 
-  ceph tell osd.0 injectargs "\
+  local args="\
     --osd-bench-duration 10 \
     --osd-bench-max-block-size 2097152 \
     --osd-bench-large-size-max-throughput 10485760 \
     --osd-bench-small-size-max-iops 10"
+  ceph tell osd.0 injectargs ${args## }
 
   # anything with a bs larger than 2097152  must fail
   expect_false ceph tell osd.0 bench 1 2097153
@@ -1878,6 +1914,7 @@ MON_TESTS+=" mon_crushmap_validation"
 MON_TESTS+=" mon_ping"
 MON_TESTS+=" mon_deprecated_commands"
 MON_TESTS+=" mon_caps"
+MON_TESTS+=" mon_cephdf_commands"
 OSD_TESTS+=" osd_bench"
 OSD_TESTS+=" osd_negative_filestore_merge_threshold"
 OSD_TESTS+=" tiering_agent"
@@ -1885,7 +1922,6 @@ OSD_TESTS+=" tiering_agent"
 MDS_TESTS+=" mds_tell"
 MDS_TESTS+=" mon_mds"
 MDS_TESTS+=" mon_mds_metadata"
-MDS_TESTS+=" mon_cephdf_commands"
 
 TESTS+=$MON_TESTS
 TESTS+=$OSD_TESTS

@@ -19,6 +19,7 @@
 extern "C" {
 #endif
 
+#include "../compat.h"
 #include <netinet/in.h>
 #if defined(__linux__)
 #include <linux/types.h>
@@ -124,6 +125,26 @@ enum {
      full; ops will either succeed (e.g., delete) or return EDQUOT or
      ENOSPC. */
   LIBRADOS_OPERATION_FULL_TRY           = 64,
+};
+/** @} */
+
+/**
+ * @name Alloc hint flags
+ * Flags for rados_write_op_alloc_hint2() and rados_set_alloc_hint2()
+ * indicating future IO patterns.
+ * @{
+ */
+enum {
+  LIBRADOS_ALLOC_HINT_SEQUENTIAL_WRITE = 1,
+  LIBRADOS_ALLOC_HINT_RANDOM_WRITE = 2,
+  LIBRADOS_ALLOC_HINT_FLAG_SEQUENTIAL_READ = 4,
+  LIBRADOS_ALLOC_HINT_FLAG_RANDOM_READ = 8,
+  LIBRADOS_ALLOC_HINT_FLAG_APPEND_ONLY = 16,
+  LIBRADOS_ALLOC_HINT_FLAG_IMMUTABLE = 32,
+  LIBRADOS_ALLOC_HINT_FLAG_SHORTLIVED = 64,
+  LIBRADOS_ALLOC_HINT_FLAG_LONGLIVED = 128,
+  LIBRADOS_ALLOC_HINT_FLAG_COMPRESSIBLE = 256,
+  LIBRADOS_ALLOC_HINT_FLAG_INCOMPRESSIBLE = 512,
 };
 /** @} */
 
@@ -1837,6 +1858,22 @@ CEPH_RADOS_API int rados_aio_is_safe_and_cb(rados_completion_t c);
 CEPH_RADOS_API int rados_aio_get_return_value(rados_completion_t c);
 
 /**
+ * Get the internal object version of the target of an asychronous operation
+ *
+ * The return value is set when the operation is complete or safe,
+ * whichever comes first.
+ *
+ * @pre The operation is safe or complete
+ *
+ * @note BUG: complete callback may never be called when the safe
+ * message is received before the complete message
+ *
+ * @param c async operation to inspect
+ * @returns version number of the asychronous operation's target
+ */
+CEPH_RADOS_API uint64_t rados_aio_get_version(rados_completion_t c);
+
+/**
  * Release a completion
  *
  * Call this when you no longer need the completion. It may not be
@@ -2399,6 +2436,25 @@ CEPH_RADOS_API int rados_set_alloc_hint(rados_ioctx_t io, const char *o,
                                         uint64_t expected_object_size,
                                         uint64_t expected_write_size);
 
+/**
+ * Set allocation hint for an object
+ *
+ * This is an advisory operation, it will always succeed (as if it was
+ * submitted with a LIBRADOS_OP_FLAG_FAILOK flag set) and is not
+ * guaranteed to do anything on the backend.
+ *
+ * @param io the pool the object is in
+ * @param o the name of the object
+ * @param expected_object_size expected size of the object, in bytes
+ * @param expected_write_size expected size of writes to the object, in bytes
+ * @param flags hints about future IO patterns
+ * @returns 0 on success, negative error code on failure
+ */
+CEPH_RADOS_API int rados_set_alloc_hint2(rados_ioctx_t io, const char *o,
+					 uint64_t expected_object_size,
+					 uint64_t expected_write_size,
+					 uint32_t flags);
+
 /** @} Hints */
 
 /**
@@ -2659,6 +2715,19 @@ CEPH_RADOS_API void rados_write_op_omap_clear(rados_write_op_t write_op);
 CEPH_RADOS_API void rados_write_op_set_alloc_hint(rados_write_op_t write_op,
                                                   uint64_t expected_object_size,
                                                   uint64_t expected_write_size);
+
+/**
+ * Set allocation hint for an object
+ *
+ * @param write_op operation to add this action to
+ * @param expected_object_size expected size of the object, in bytes
+ * @param expected_write_size expected size of writes to the object, in bytes
+ * @param flags hints about future IO patterns
+ */
+CEPH_RADOS_API void rados_write_op_set_alloc_hint2(rados_write_op_t write_op,
+						   uint64_t expected_object_size,
+						   uint64_t expected_write_size,
+						   uint32_t flags);
 
 /**
  * Perform a write operation synchronously

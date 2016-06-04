@@ -18,7 +18,12 @@
 %bcond_without cephfs_java
 %bcond_with tests
 %bcond_with xio
+%ifnarch s390 s390x
 %bcond_without tcmalloc
+%else
+# no gperftools/tcmalloc on s390(x)
+%bcond_with tcmalloc
+%endif
 %bcond_without libs_compat
 %bcond_with lowmem_builder
 %if 0%{?fedora} || 0%{?rhel}
@@ -138,7 +143,9 @@ BuildRequires:	btrfs-progs
 BuildRequires:	nss-devel
 BuildRequires:	keyutils-libs-devel
 BuildRequires:	libatomic_ops-devel
+%if 0%{with tcmalloc}
 BuildRequires:	gperftools-devel
+%endif
 BuildRequires:  openldap-devel
 BuildRequires:  openssl-devel
 BuildRequires:  redhat-lsb-core
@@ -198,7 +205,6 @@ Requires:      python-setuptools
 Requires:      grep
 Requires:      xfsprogs
 Requires:      logrotate
-Requires:      parted
 Requires:      util-linux
 Requires:      hdparm
 Requires:      cryptsetup
@@ -306,12 +312,6 @@ Requires:	librados2 = %{epoch}:%{version}-%{release}
 Requires:	librgw2 = %{epoch}:%{version}-%{release}
 %if 0%{?rhel} || 0%{?fedora}
 Requires:	mailcap
-# python-flask for powerdns
-Requires:	python-flask
-%endif
-%if 0%{?suse_version}
-# python-Flask for powerdns
-Requires:      python-Flask
 %endif
 %description radosgw
 RADOS is a distributed object store used by the Ceph distributed
@@ -343,6 +343,7 @@ Requires:	gdisk
 %if 0%{?suse_version}
 Requires:	gptfdisk
 %endif
+Requires:       parted
 %description osd
 ceph-osd is the object storage daemon for the Ceph distributed file
 system.  It is responsible for storing objects on a local file system
@@ -612,7 +613,7 @@ python-cephfs instead.
 # common
 #################################################################################
 %prep
-%setup -q
+%autosetup -p1
 
 %build
 %if 0%{with cephfs_java}
@@ -661,7 +662,9 @@ export RPM_OPT_FLAGS=`echo $RPM_OPT_FLAGS | sed -e 's/i386/i486/'`
 %endif
 		$CEPH_EXTRA_CONFIGURE_ARGS \
 		%{?_with_ocf} \
-		%{?_with_tcmalloc} \
+%if %{without tcmalloc}
+		--without-tcmalloc \
+%endif
 		CFLAGS="$RPM_OPT_FLAGS" CXXFLAGS="$RPM_OPT_FLAGS"
 
 %if %{with lowmem_builder}
@@ -892,8 +895,13 @@ fi
 if ! getent passwd ceph >/dev/null ; then
     CEPH_USER_ID_OPTION=""
     getent passwd $CEPH_USER_ID >/dev/null || CEPH_USER_ID_OPTION="-u $CEPH_USER_ID"
-    useradd ceph $CEPH_USER_ID_OPTION -r -g ceph -s /sbin/nologin -c "Ceph daemons" -d %{_localstatedir}/lib/ceph 2>/dev/null || :
+    useradd ceph $CEPH_USER_ID_OPTION -r -g ceph -s /sbin/nologin 2>/dev/null || :
 fi
+usermod -c "Ceph storage service" \
+        -d %{_localstatedir}/lib/ceph \   
+        -g ceph \
+        -s /sbin/nologin \
+        ceph
 %endif
 exit 0
 
@@ -1213,9 +1221,11 @@ fi
 %{_libdir}/librados_tp.so.*
 %endif
 
-%post -n librados2 -p /sbin/ldconfig
+%post -n librados2
+/sbin/ldconfig
 
-%postun -n librados2 -p /sbin/ldconfig
+%postun -n librados2
+/sbin/ldconfig
 
 #################################################################################
 %files -n librados2-devel
@@ -1248,9 +1258,11 @@ fi
 %defattr(-,root,root,-)
 %{_libdir}/libradosstriper.so.*
 
-%post -n libradosstriper1 -p /sbin/ldconfig
+%post -n libradosstriper1
+/sbin/ldconfig
 
-%postun -n libradosstriper1 -p /sbin/ldconfig
+%postun -n libradosstriper1
+/sbin/ldconfig
 
 #################################################################################
 %files -n libradosstriper1-devel
@@ -1273,7 +1285,8 @@ fi
 mkdir -p /usr/lib64/qemu/
 ln -sf %{_libdir}/librbd.so.1 /usr/lib64/qemu/librbd.so.1
 
-%postun -n librbd1 -p /sbin/ldconfig
+%postun -n librbd1
+/sbin/ldconfig
 
 #################################################################################
 %files -n librbd1-devel
@@ -1292,9 +1305,11 @@ ln -sf %{_libdir}/librbd.so.1 /usr/lib64/qemu/librbd.so.1
 %defattr(-,root,root,-)
 %{_libdir}/librgw.so.*
 
-%post -n librgw2 -p /sbin/ldconfig
+%post -n librgw2
+/sbin/ldconfig
 
-%postun -n librgw2 -p /sbin/ldconfig
+%postun -n librgw2
+/sbin/ldconfig
 
 #################################################################################
 %files -n librgw2-devel
@@ -1315,9 +1330,11 @@ ln -sf %{_libdir}/librbd.so.1 /usr/lib64/qemu/librbd.so.1
 %defattr(-,root,root,-)
 %{_libdir}/libcephfs.so.*
 
-%post -n libcephfs1 -p /sbin/ldconfig
+%post -n libcephfs1
+/sbin/ldconfig
 
-%postun -n libcephfs1 -p /sbin/ldconfig
+%postun -n libcephfs1
+/sbin/ldconfig
 
 #################################################################################
 %files -n libcephfs1-devel
@@ -1358,7 +1375,6 @@ ln -sf %{_libdir}/librbd.so.1 /usr/lib64/qemu/librbd.so.1
 %{_bindir}/ceph_smalliobenchfs
 %{_bindir}/ceph_smalliobenchrbd
 %{_bindir}/ceph_test_*
-%{_bindir}/librgw_file*
 %{_bindir}/ceph_tpbench
 %{_bindir}/ceph_xattr_bench
 %{_bindir}/ceph-coverage
@@ -1376,9 +1392,11 @@ ln -sf %{_libdir}/librbd.so.1 /usr/lib64/qemu/librbd.so.1
 %defattr(-,root,root,-)
 %{_libdir}/libcephfs_jni.so.*
 
-%post -n libcephfs_jni1 -p /sbin/ldconfig
+%post -n libcephfs_jni1
+/sbin/ldconfig
 
-%postun -n libcephfs_jni1 -p /sbin/ldconfig
+%postun -n libcephfs_jni1
+/sbin/ldconfig
 
 #################################################################################
 %files -n libcephfs_jni1-devel
@@ -1407,7 +1425,7 @@ FILE_CONTEXT=/etc/selinux/${SELINUXTYPE}/contexts/files/file_contexts
 cp ${FILE_CONTEXT} ${FILE_CONTEXT}.pre
 
 # Install the policy
-/usr/sbin/semodule -X 100 -i %{_datadir}/selinux/packages/ceph.pp
+/usr/sbin/semodule -i %{_datadir}/selinux/packages/ceph.pp
 
 # Load the policy if SELinux is enabled
 if ! /usr/sbin/selinuxenabled; then
@@ -1432,6 +1450,8 @@ fi
 # Now, relabel the files
 /usr/sbin/fixfiles -C ${FILE_CONTEXT}.pre restore 2> /dev/null
 rm -f ${FILE_CONTEXT}.pre
+# The fixfiles command won't fix label for /var/run/ceph
+/usr/sbin/restorecon -R /var/run/ceph > /dev/null 2>&1
 
 # Start the daemons iff they were running before
 if test $STATUS -eq 0; then
@@ -1447,7 +1467,7 @@ if [ $1 -eq 0 ]; then
     cp ${FILE_CONTEXT} ${FILE_CONTEXT}.pre
 
     # Remove the module
-    /usr/sbin/semodule -n -r ceph
+    /usr/sbin/semodule -n -r ceph > /dev/null 2>&1
 
     # Reload the policy if SELinux is enabled
     if ! /usr/sbin/selinuxenabled ; then
@@ -1466,6 +1486,8 @@ if [ $1 -eq 0 ]; then
 
     /usr/sbin/fixfiles -C ${FILE_CONTEXT}.pre restore 2> /dev/null
     rm -f ${FILE_CONTEXT}.pre
+    # The fixfiles command won't fix label for /var/run/ceph
+    /usr/sbin/restorecon -R /var/run/ceph > /dev/null 2>&1
 
     # Start the daemons if they were running before
     if test $STATUS -eq 0; then

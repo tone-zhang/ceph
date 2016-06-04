@@ -423,6 +423,8 @@ class CephOsdName(CephArgtype):
             i = int(i)
         except:
             raise ArgumentFormat('osd id ' + i + ' not integer')
+        if i < 0:
+            raise ArgumentFormat('osd id {0} is less than 0'.format(i))
         self.nametype = t
         self.nameid = i
         self.val = i
@@ -1290,4 +1292,3 @@ def json_command(cluster, target=('mon', ''), prefix=None, argdict=None,
             raise
 
     return ret, outbuf, outs
-

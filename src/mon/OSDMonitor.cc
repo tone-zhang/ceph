@@ -26,6 +26,7 @@
 #include "PGMonitor.h"
 
 #include "MonitorDBStore.h"
+#include "Session.h"
 
 #include "crush/CrushWrapper.h"
 #include "crush/CrushTester.h"
@@ -519,6 +520,10 @@ int OSDMonitor::reweight_by_utilization(int oload,
 	if (*q >= (int)pgs_by_osd.size())
 	  pgs_by_osd.resize(*q);
 	if (pgs_by_osd[*q] == 0) {
+          if (osdmap.crush->get_item_weightf(*q) <= 0) {
+            //skip if we currently can not identify item
+            continue;
+          }
 	  weight_sum += osdmap.crush->get_item_weightf(*q);
 	  ++num_osds;
 	}
@@ -536,17 +541,15 @@ int OSDMonitor::reweight_by_utilization(int oload,
     average_util = (double)num_pg_copies / weight_sum;
   } else {
     // by osd utilization
-    int num_osd = MIN(1, pgm.osd_stat.size());
+    int num_osd = MAX(1, pgm.osd_stat.size());
     if ((uint64_t)pgm.osd_sum.kb * 1024 / num_osd
 	< g_conf->mon_reweight_min_bytes_per_osd) {
-      ostringstream oss;
       *ss << "Refusing to reweight: we only have " << pgm.osd_sum.kb
 	  << " kb across all osds!\n";
       return -EDOM;
     }
     if ((uint64_t)pgm.osd_sum.kb_used * 1024 / num_osd
 	< g_conf->mon_reweight_min_bytes_per_osd) {
-      ostringstream oss;
       *ss << "Refusing to reweight: we only have " << pgm.osd_sum.kb_used
 	  << " kb used across all osds!\n";
       return -EDOM;
@@ -566,9 +569,9 @@ int OSDMonitor::reweight_by_utilization(int oload,
   ostringstream oss;
   if (f) {
     f->open_object_section("reweight_by_utilization");
-    f->dump_unsigned("overload_min", oload);
+    f->dump_int("overload_min", oload);
     f->dump_float("max_change", max_changef);
-    f->dump_float("max_change_osds", max_osds);
+    f->dump_int("max_change_osds", max_osds);
     f->dump_float("average_utilization", average_util);
     f->dump_float("overload_utilization", overload_util);
   } else {
@@ -592,6 +595,18 @@ int OSDMonitor::reweight_by_utilization(int oload,
     std::pair<int, float> osd_util;
     osd_util.first = p->first;
     if (by_pg) {
+      if (p->first >= (int)pgs_by_osd.size() ||
+        pgs_by_osd[p->first] == 0) {
+        // skip if this OSD does not contain any pg
+        // belonging to the specified pool(s).
+        continue;
+      }
+
+      if (osdmap.crush->get_item_weightf(p->first) <= 0) {
+        // skip if we are unable to locate item.
+        continue;
+      }
+
       osd_util.second = pgs_by_osd[p->first] / osdmap.crush->get_item_weightf(p->first);
     } else {
       osd_util.second = (double)p->second.kb_used / (double)p->second.kb;
@@ -616,13 +631,17 @@ int OSDMonitor::reweight_by_utilization(int oload,
 	 util_by_osd.begin();
        p != util_by_osd.end();
        ++p) {
+    unsigned weight = osdmap.get_weight(p->first);
+    if (weight == 0) {
+      // skip if OSD is currently out
+      continue;
+    }
     float util = p->second;
 
     if (util >= overload_util) {
       // Assign a lower weight to overloaded OSDs. The current weight
       // is a factor to take into account the original weights,
       // to represent e.g. differing storage capacities
-      unsigned weight = osdmap.get_weight(p->first);
       unsigned new_weight = (unsigned)((average_util / util) * (float)weight);
       if (weight > max_change)
 	new_weight = MAX(new_weight, weight - max_change);
@@ -633,7 +652,7 @@ int OSDMonitor::reweight_by_utilization(int oload,
       }
       if (f) {
 	f->open_object_section("osd");
-	f->dump_unsigned("osd", p->first);
+	f->dump_int("osd", p->first);
 	f->dump_float("weight", (float)weight / (float)0x10000);
 	f->dump_float("new_weight", (float)new_weight / (float)0x10000);
 	f->close_section();
@@ -649,7 +668,6 @@ int OSDMonitor::reweight_by_utilization(int oload,
     }
     if (!no_increasing && util <= underload_util) {
       // assign a higher weight.. if we can.
-      unsigned weight = osdmap.get_weight(p->first);
       unsigned new_weight = (unsigned)((average_util / util) * (float)weight);
       new_weight = MIN(new_weight, weight + max_change);
       if (new_weight > 0x10000)
@@ -1005,11 +1023,9 @@ void OSDMonitor::create_pending()
 
   dout(10) << "create_pending e " << pending_inc.epoch << dendl;
 
-  // drop any redundant pg_temp entries
-  OSDMap::remove_redundant_temporaries(g_ceph_context, osdmap, &pending_inc);
-
-  // drop any pg or primary_temp entries with no up entries
-  OSDMap::remove_down_temps(g_ceph_context, osdmap, &pending_inc);
+  // clean up pg_temp, primary_temp
+  OSDMap::clean_temps(g_ceph_context, osdmap, &pending_inc);
+  dout(10) << "create_pending  did clean_temps" << dendl;
 }
 
 void OSDMonitor::maybe_prime_pg_temp()
@@ -2780,29 +2796,6 @@ void OSDMonitor::tick()
       do_propose = true;
     }
   }
-  // ---------------
-#define SWAP_PRIMARIES_AT_START 0
-#define SWAP_TIME 1
-#if 0
-  if (SWAP_PRIMARIES_AT_START) {
-    // For all PGs that have OSD 0 as the primary,
-    // switch them to use the first replca
-    ps_t numps = osdmap.get_pg_num();
-    for (int64_t pool=0; pool<1; pool++)
-      for (ps_t ps = 0; ps < numps; ++ps) {
-	pg_t pgid = pg_t(pg_t::TYPE_REPLICATED, ps, pool, -1);
-	vector<int> osds;
-	osdmap.pg_to_osds(pgid, osds);
-	if (osds[0] == 0) {
-	  pending_inc.new_pg_swap_primary[pgid] = osds[1];
-	  dout(3) << "Changing primary for PG " << pgid << " from " << osds[0] << " to "
-		  << osds[1] << dendl;
-	  do_propose = true;
-	}
-      }
-  }
-#endif
-  // ---------------
 
   if (update_pools_status())
     do_propose = true;
@@ -2845,24 +2838,6 @@ void OSDMonitor::handle_osd_timeouts(const utime_t &now,
   }
 }
 
-void OSDMonitor::mark_all_down()
-{
-  assert(mon->is_leader());
-
-  dout(7) << "mark_all_down" << dendl;
-
-  set<int32_t> ls;
-  osdmap.get_all_osds(ls);
-  for (set<int32_t>::iterator it = ls.begin();
-       it != ls.end();
-       ++it) {
-    if (osdmap.is_down(*it)) continue;
-    pending_inc.new_state[*it] = CEPH_OSD_UP;
-  }
-
-  propose_pending();
-}
-
 void OSDMonitor::get_health(list<pair<health_status_t,string> >& summary,
 			    list<pair<health_status_t,string> > *detail,
 			    CephContext *cct) const
@@ -2897,7 +2872,8 @@ void OSDMonitor::get_health(list<pair<health_status_t,string> >& summary,
     }
 
     // warn about flags
-    if (osdmap.test_flag(CEPH_OSDMAP_PAUSERD |
+    if (osdmap.test_flag(CEPH_OSDMAP_FULL |
+			 CEPH_OSDMAP_PAUSERD |
 			 CEPH_OSDMAP_PAUSEWR |
 			 CEPH_OSDMAP_NOUP |
 			 CEPH_OSDMAP_NODOWN |
@@ -3281,14 +3257,22 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
         goto reply;
       f->close_section();
     } else {
+      r = 0;
       f->open_array_section("osd_metadata");
       for (int i=0; i<osdmap.get_max_osd(); ++i) {
         if (osdmap.exists(i)) {
           f->open_object_section("osd");
           f->dump_unsigned("id", i);
           r = dump_osd_metadata(i, f.get(), NULL);
-          if (r < 0)
+          if (r == -EINVAL || r == -ENOENT) {
+            // Drop error, continue to get other daemons' metadata
+            dout(4) << "No metadata for osd." << i << dendl;
+            r = 0;
+            continue;
+          } else if (r < 0) {
+            // Unexpected error
             goto reply;
+          }
           f->close_section();
         }
       }
@@ -4762,18 +4746,11 @@ int OSDMonitor::prepare_new_pool(string& name, uint64_t auid,
     dout(10) << " prepare_pool_size returns " << r << dendl;
     return r;
   }
-  const int64_t minsize = osdmap.crush->get_rule_mask_min_size(crush_ruleset);
-  if ((int64_t)size < minsize) {
-    *ss << "pool size " << size << " is smaller than crush ruleset name "
-        << crush_ruleset_name << " min size " << minsize;
+
+  if (!osdmap.crush->check_crush_rule(crush_ruleset, pool_type, size, *ss)) {
     return -EINVAL;
   }
-  const int64_t maxsize = osdmap.crush->get_rule_mask_max_size(crush_ruleset);
-  if ((int64_t)size > maxsize) {
-    *ss << "pool size " << size << " is bigger than crush ruleset name "
-        << crush_ruleset_name << " max size " << maxsize;
-    return -EINVAL;
-  }
+
   uint32_t stripe_width = 0;
   r = prepare_pool_stripe_width(pool_type, erasure_code_profile, &stripe_width, ss);
   if (r) {
@@ -4857,8 +4834,12 @@ bool OSDMonitor::prepare_set_flag(MonOpRequestRef op, int flag)
   ostringstream ss;
   if (pending_inc.new_flags < 0)
     pending_inc.new_flags = osdmap.get_flags();
-  pending_inc.new_flags |= flag;
-  ss << "set " << OSDMap::get_flag_string(flag);
+  if (osdmap.test_flag(flag)) {
+    ss << OSDMap::get_flag_string(flag) << " flag is already set";
+  } else {
+    pending_inc.new_flags |= flag;
+    ss << "set " << OSDMap::get_flag_string(flag);
+  }
   wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, ss.str(),
 						    get_last_committed() + 1));
   return true;
@@ -4870,8 +4851,12 @@ bool OSDMonitor::prepare_unset_flag(MonOpRequestRef op, int flag)
   ostringstream ss;
   if (pending_inc.new_flags < 0)
     pending_inc.new_flags = osdmap.get_flags();
-  pending_inc.new_flags &= ~flag;
-  ss << "unset " << OSDMap::get_flag_string(flag);
+  if (!osdmap.test_flag(flag)) {
+    ss << OSDMap::get_flag_string(flag) << " flag is not set";
+  } else { 
+    pending_inc.new_flags &= ~flag;
+    ss << "unset " << OSDMap::get_flag_string(flag);
+  }
   wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, ss.str(),
 						    get_last_committed() + 1));
   return true;
@@ -5119,17 +5104,8 @@ int OSDMonitor::prepare_command_pool_set(map<string,cmd_vartype> &cmdmap,
       ss << "crush ruleset " << n << " does not exist";
       return -ENOENT;
     }
-    const int64_t poolsize = p.get_size();
-    const int64_t minsize = osdmap.crush->get_rule_mask_min_size(n);
-    if (poolsize < minsize) {
-      ss << "pool size " << poolsize << " is smaller than crush ruleset " 
-         << n << " min size " << minsize;
-      return -EINVAL;
-    }
-    const int64_t maxsize = osdmap.crush->get_rule_mask_max_size(n);
-    if (poolsize > maxsize) {
-      ss << "pool size " << poolsize << " is bigger than crush ruleset " 
-         << n << " max size " << maxsize;
+
+    if (!osdmap.crush->check_crush_rule(n, p.get_type(), p.get_size(), ss)) {
       return -EINVAL;
     }
     p.crush_ruleset = n;
@@ -6467,7 +6443,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       return true;
     }
 
-    vector<string> id_vec;
+    vector<int64_t> id_vec;
     vector<int32_t> new_pg_temp;
     if (!cmd_getval(g_ceph_context, cmdmap, "id", id_vec)) {
       ss << "unable to parse 'id' value(s) '"
@@ -6475,18 +6451,12 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       err = -EINVAL;
       goto reply;
     }
-    for (unsigned i = 0; i < id_vec.size(); i++) {
-      int32_t osd = parse_osd_id(id_vec[i].c_str(), &ss);
-      if (osd < 0) {
-        err = -EINVAL;
-        goto reply;
-      }
+    for (auto osd : id_vec) {
       if (!osdmap.exists(osd)) {
         ss << "osd." << osd << " does not exist";
         err = -ENOENT;
         goto reply;
       }
-
       new_pg_temp.push_back(osd);
     }
 
@@ -6514,27 +6484,17 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       goto reply;
     }
 
-    string id;
-    int32_t osd;
-    if (!cmd_getval(g_ceph_context, cmdmap, "id", id)) {
+    int64_t osd;
+    if (!cmd_getval(g_ceph_context, cmdmap, "id", osd)) {
       ss << "unable to parse 'id' value '"
          << cmd_vartype_stringify(cmdmap["id"]) << "'";
       err = -EINVAL;
       goto reply;
     }
-    if (strcmp(id.c_str(), "-1")) {
-      osd = parse_osd_id(id.c_str(), &ss);
-      if (osd < 0) {
-        err = -EINVAL;
-        goto reply;
-      }
-      if (!osdmap.exists(osd)) {
-        ss << "osd." << osd << " does not exist";
-        err = -ENOENT;
-        goto reply;
-      }
-    } else {
-      osd = -1;
+    if (osd != -1 && !osdmap.exists(osd)) {
+      ss << "osd." << osd << " does not exist";
+      err = -ENOENT;
+      goto reply;
     }
 
     if (!g_conf->mon_osd_allow_primary_temp) {

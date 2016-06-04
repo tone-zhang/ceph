@@ -196,7 +196,8 @@ OPTION(ms_inject_delay_probability, OPT_DOUBLE, 0) // range [0, 1]
 OPTION(ms_inject_internal_delays, OPT_DOUBLE, 0)   // seconds
 OPTION(ms_dump_on_send, OPT_BOOL, false)           // hexdump msg to log on send
 OPTION(ms_dump_corrupt_message_level, OPT_INT, 1)  // debug level to hexdump undecodeable messages at
-OPTION(ms_async_op_threads, OPT_INT, 3)
+OPTION(ms_async_op_threads, OPT_INT, 3)            // number of worker processing threads for async messenger created on init
+OPTION(ms_async_max_op_threads, OPT_INT, 5)        // max number of worker processing threads for async messenger
 OPTION(ms_async_set_affinity, OPT_BOOL, true)
 // example: ms_async_affinity_cores = 0,1
 // The number of coreset is expected to equal to ms_async_op_threads, otherwise
@@ -382,6 +383,7 @@ OPTION(client_notify_timeout, OPT_INT, 10) // in seconds
 OPTION(osd_client_watch_timeout, OPT_INT, 30) // in seconds
 OPTION(client_caps_release_delay, OPT_INT, 5) // in seconds
 OPTION(client_quota, OPT_BOOL, false)
+OPTION(client_quota_df, OPT_BOOL, true) // use quota for df on subdir mounts
 OPTION(client_oc, OPT_BOOL, true)
 OPTION(client_oc_size, OPT_INT, 1024*1024* 200)    // MB * n
 OPTION(client_oc_max_dirty, OPT_INT, 1024*1024* 100)    // MB * n  (dirty OR tx.. bigish)
@@ -417,6 +419,8 @@ OPTION(client_use_faked_inos, OPT_BOOL, false)
 OPTION(client_mds_namespace, OPT_INT, -1)
 
 OPTION(crush_location, OPT_STR, "")       // whitespace-separated list of key=value pairs describing crush location
+OPTION(crush_location_hook, OPT_STR, "")
+OPTION(crush_location_hook_timeout, OPT_INT, 10)
 
 OPTION(objecter_tick_interval, OPT_DOUBLE, 5.0)
 OPTION(objecter_timeout, OPT_DOUBLE, 10.0)    // before we ask for a map
@@ -610,9 +614,9 @@ OPTION(osd_pg_op_threshold_ratio, OPT_U64, 2)             // the expected maximu
 OPTION(osd_pg_bits, OPT_INT, 6)  // bits per osd
 OPTION(osd_pgp_bits, OPT_INT, 6)  // bits per osd
 OPTION(osd_crush_chooseleaf_type, OPT_INT, 1) // 1 = host
-// This parameter is not consumed by ceph C code but the upstart scripts.
-// OPTION(osd_crush_initial_weight, OPT_DOUBLE, 0) // the initial weight is for newly added osds.
 OPTION(osd_pool_use_gmt_hitset, OPT_BOOL, true) // try to use gmt for hitset archive names if all osds in cluster support it.
+OPTION(osd_crush_update_on_start, OPT_BOOL, true)
+OPTION(osd_crush_initial_weight, OPT_DOUBLE, -1) // if >=0, the initial weight is for newly added osds.
 OPTION(osd_pool_default_crush_rule, OPT_INT, -1) // deprecated for osd_pool_default_crush_replicated_ruleset
 OPTION(osd_pool_default_crush_replicated_ruleset, OPT_INT, CEPH_DEFAULT_CRUSH_REPLICATED_RULESET)
 OPTION(osd_pool_erasure_code_stripe_width, OPT_U32, OSD_POOL_ERASURE_CODE_STRIPE_WIDTH) // in bytes
@@ -659,8 +663,8 @@ OPTION(osd_hit_set_max_size, OPT_INT, 100000)  // max target size for a HitSet
 OPTION(osd_hit_set_namespace, OPT_STR, ".ceph-internal") // rados namespace for hit_set tracking
 
 // conservative default throttling values
-OPTION(osd_tier_promote_max_objects_sec, OPT_U64, 5 * 1024*1024)
-OPTION(osd_tier_promote_max_bytes_sec, OPT_U64, 25)
+OPTION(osd_tier_promote_max_objects_sec, OPT_U64, 25)
+OPTION(osd_tier_promote_max_bytes_sec, OPT_U64, 5 * 1024*1024)
 
 OPTION(osd_tier_default_cache_mode, OPT_STR, "writeback")
 OPTION(osd_tier_default_cache_hit_set_count, OPT_INT, 4)
@@ -743,8 +747,8 @@ OPTION(osd_default_data_pool_replay_window, OPT_INT, 45)
 OPTION(osd_preserve_trimmed_log, OPT_BOOL, false)
 OPTION(osd_auto_mark_unfound_lost, OPT_BOOL, false)
 OPTION(osd_recovery_delay_start, OPT_FLOAT, 0)
-OPTION(osd_recovery_max_active, OPT_INT, 3)
-OPTION(osd_recovery_max_single_start, OPT_INT, 1)
+OPTION(osd_recovery_max_active, OPT_U64, 3)
+OPTION(osd_recovery_max_single_start, OPT_U64, 1)
 OPTION(osd_recovery_max_chunk, OPT_U64, 8<<20)  // max size of push chunk
 OPTION(osd_copyfrom_max_chunk, OPT_U64, 8<<20)   // max size of a COPYFROM chunk
 OPTION(osd_push_per_object_cost, OPT_U64, 1000)  // push cost per object
@@ -843,7 +847,7 @@ OPTION(rocksdb_block_size, OPT_INT, 4*1024)  // default rocksdb block size
 // rocksdb options that will be used for omap(if omap_backend is rocksdb)
 OPTION(filestore_rocksdb_options, OPT_STR, "")
 // rocksdb options that will be used in monstore
-OPTION(mon_rocksdb_options, OPT_STR, "cache_size=536870912,write_buffer_size=33554432,block_size=65536,compression=kNoCompression")
+OPTION(mon_rocksdb_options, OPT_STR, "write_buffer_size=33554432,compression=kNoCompression")
 
 /**
  * osd_*_priority adjust the relative priority of client io, recovery io,
@@ -862,6 +866,10 @@ OPTION(osd_snap_trim_cost, OPT_U32, 1<<20) // set default cost equal to 1MB io
 OPTION(osd_scrub_priority, OPT_U32, 5)
 // set default cost equal to 50MB io
 OPTION(osd_scrub_cost, OPT_U32, 50<<20) 
+
+OPTION(osd_recovery_priority, OPT_U32, 5)
+// set default cost equal to 20MB io
+OPTION(osd_recovery_cost, OPT_U32, 20<<20)
 
 /**
  * osd_recovery_op_warn_multiple scales the normal warning threshhold,
@@ -889,6 +897,8 @@ OPTION(osd_bench_small_size_max_iops, OPT_U32, 100) // 100 IOPS
 OPTION(osd_bench_large_size_max_throughput, OPT_U64, 100 << 20) // 100 MB/s
 OPTION(osd_bench_max_block_size, OPT_U64, 64 << 20) // cap the block size at 64MB
 OPTION(osd_bench_duration, OPT_U32, 30) // duration of 'osd bench', capped at 30s to avoid triggering timeouts
+
+OPTION(osd_discard_disconnected_ops, OPT_BOOL, true)
 
 OPTION(memstore_device_bytes, OPT_U64, 1024*1024*1024)
 OPTION(memstore_page_set, OPT_BOOL, true)
@@ -938,10 +948,25 @@ OPTION(bluestore_block_db_create, OPT_BOOL, false)
 OPTION(bluestore_block_wal_path, OPT_STR, "")
 OPTION(bluestore_block_wal_size, OPT_U64, 96 * 1024*1024) // rocksdb wal
 OPTION(bluestore_block_wal_create, OPT_BOOL, false)
-OPTION(bluestore_min_alloc_size, OPT_U32, 64*1024)
+OPTION(bluestore_block_preallocate_file, OPT_BOOL, false) //whether preallocate space if block/db_path/wal_path is file rather that block device.
+OPTION(bluestore_csum, OPT_BOOL, true)
+OPTION(bluestore_csum_type, OPT_STR, "crc32c")
+OPTION(bluestore_min_csum_block, OPT_U32, 4096)
+OPTION(bluestore_max_csum_block, OPT_U32, 64*1024)
+OPTION(bluestore_min_alloc_size, OPT_U32, 0)
+OPTION(bluestore_min_alloc_size_hdd, OPT_U32, 64*1024)
+OPTION(bluestore_min_alloc_size_ssd, OPT_U32, 4*1024)
+OPTION(bluestore_compression, OPT_STR, "none")  // force|aggressive|passive|none
+OPTION(bluestore_compression_algorithm, OPT_STR, "snappy")
+OPTION(bluestore_compression_min_blob_size, OPT_U32, 256*1024)
+OPTION(bluestore_compression_max_blob_size, OPT_U32, 4*1024*1024)
 OPTION(bluestore_onode_map_size, OPT_U32, 1024)   // onodes per collection
+OPTION(bluestore_collection_buffer_cache_size, OPT_U32, 16*1024*1024) // per collection!!
 OPTION(bluestore_cache_tails, OPT_BOOL, true)   // cache tail blocks in Onode
 OPTION(bluestore_kvbackend, OPT_STR, "rocksdb")
+OPTION(bluestore_allocator, OPT_STR, "stupid")  // or "bitmap"
+OPTION(bluestore_freelist_type, OPT_STR, "bitmap")
+OPTION(bluestore_freelist_blocks_per_key, OPT_INT, 128)
 OPTION(bluestore_rocksdb_options, OPT_STR, "compression=kNoCompression,max_write_buffer_number=16,min_write_buffer_number_to_merge=3,recycle_log_file_num=16")
 OPTION(bluestore_fsck_on_mount, OPT_BOOL, false)
 OPTION(bluestore_fsck_on_umount, OPT_BOOL, false)
@@ -958,7 +983,7 @@ OPTION(bluestore_wal_max_bytes, OPT_U64, 128*1024*1024)
 OPTION(bluestore_nid_prealloc, OPT_INT, 1024)
 OPTION(bluestore_overlay_max_length, OPT_INT, 65536)
 OPTION(bluestore_overlay_max, OPT_INT, 0)
-OPTION(bluestore_clone_cow, OPT_BOOL, true)  // do copy-on-write for clones
+OPTION(bluestore_clone_cow, OPT_BOOL, false)  // do copy-on-write for clones
 OPTION(bluestore_default_buffered_read, OPT_BOOL, false)
 OPTION(bluestore_debug_misc, OPT_BOOL, false)
 OPTION(bluestore_debug_no_reuse_blocks, OPT_BOOL, false)
@@ -981,6 +1006,7 @@ OPTION(kstore_cache_tails, OPT_BOOL, true)
 OPTION(kstore_default_stripe_size, OPT_INT, 65536)
 
 OPTION(filestore_omap_backend, OPT_STR, "leveldb")
+OPTION(filestore_omap_backend_path, OPT_STR, "")
 
 OPTION(filestore_debug_disable_sharded_check, OPT_BOOL, false)
 
@@ -1385,7 +1411,7 @@ OPTION(rgw_multipart_part_upload_limit, OPT_INT, 10000) // parts limit in multip
 OPTION(rgw_max_slo_entries, OPT_INT, 1000) // default number of max entries in slo
 
 OPTION(rgw_olh_pending_timeout_sec, OPT_INT, 3600) // time until we retire a pending olh change
-OPTION(rgw_user_max_buckets, OPT_U32, 1000) // global option to set max buckets count for all user
+OPTION(rgw_user_max_buckets, OPT_INT, 1000) // global option to set max buckets count for all user
 
 OPTION(rgw_objexp_gc_interval, OPT_U32, 60 * 10) // maximum time between round of expired objects garbage collecting
 OPTION(rgw_objexp_time_step, OPT_U32, 4096) // number of seconds for rounding the timestamps

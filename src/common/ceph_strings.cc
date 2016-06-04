@@ -58,6 +58,34 @@ const char *ceph_osd_watch_op_name(int o)
 	}
 }
 
+const char *ceph_osd_alloc_hint_flag_name(int f)
+{
+	switch (f) {
+	case CEPH_OSD_ALLOC_HINT_FLAG_SEQUENTIAL_WRITE:
+		return "sequential_write";
+	case CEPH_OSD_ALLOC_HINT_FLAG_RANDOM_WRITE:
+		return "random_write";
+	case CEPH_OSD_ALLOC_HINT_FLAG_SEQUENTIAL_READ:
+		return "sequential_read";
+	case CEPH_OSD_ALLOC_HINT_FLAG_RANDOM_READ:
+		return "random_read";
+	case CEPH_OSD_ALLOC_HINT_FLAG_APPEND_ONLY:
+		return "append_only";
+	case CEPH_OSD_ALLOC_HINT_FLAG_IMMUTABLE:
+		return "immutable";
+	case CEPH_OSD_ALLOC_HINT_FLAG_SHORTLIVED:
+		return "shortlived";
+	case CEPH_OSD_ALLOC_HINT_FLAG_LONGLIVED:
+		return "longlived";
+	case CEPH_OSD_ALLOC_HINT_FLAG_COMPRESSIBLE:
+		return "compressible";
+	case CEPH_OSD_ALLOC_HINT_FLAG_INCOMPRESSIBLE:
+		return "incompressible";
+	default:
+		return "???";
+	}
+}
+
 const char *ceph_mds_state_name(int s)
 {
 	switch (s) {

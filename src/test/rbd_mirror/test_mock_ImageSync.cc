@@ -4,16 +4,28 @@
 #include "test/rbd_mirror/test_mock_fixture.h"
 #include "include/rbd/librbd.hpp"
 #include "librbd/journal/Types.h"
+#include "librbd/journal/TypeTraits.h"
+#include "test/journal/mock/MockJournaler.h"
 #include "test/librados_test_stub/MockTestMemIoCtxImpl.h"
 #include "test/librbd/mock/MockImageCtx.h"
 #include "test/librbd/mock/MockObjectMap.h"
-#include "test/rbd_mirror/mock/MockJournaler.h"
 #include "tools/rbd_mirror/ImageSync.h"
 #include "tools/rbd_mirror/Threads.h"
 #include "tools/rbd_mirror/image_sync/ImageCopyRequest.h"
 #include "tools/rbd_mirror/image_sync/SnapshotCopyRequest.h"
 #include "tools/rbd_mirror/image_sync/SyncPointCreateRequest.h"
 #include "tools/rbd_mirror/image_sync/SyncPointPruneRequest.h"
+
+namespace librbd {
+namespace journal {
+
+template <>
+struct TypeTraits<librbd::MockImageCtx> {
+  typedef ::journal::MockJournaler Journaler;
+};
+
+} // namespace journal
+} // namespace librbd
 
 // template definitions
 #include "tools/rbd_mirror/ImageSync.cc"
@@ -61,6 +73,7 @@ public:
                                      SnapshotCopyRequest<librbd::ImageCtx>::SnapMap *snap_map,
                                      journal::MockJournaler *journaler,
                                      librbd::journal::MirrorPeerClientMeta *client_meta,
+                                     ContextWQ *work_queue,
                                      Context *on_finish) {
     assert(s_instance != nullptr);
     s_instance->on_finish = on_finish;
@@ -226,7 +239,7 @@ public:
     return new MockImageSync(&mock_local_image_ctx, &mock_remote_image_ctx,
                              m_threads->timer, &m_threads->timer_lock,
                              "mirror-uuid", &mock_journaler, &m_client_meta,
-                             ctx);
+                             m_threads->work_queue, ctx);
   }
 
   librbd::ImageCtx *m_remote_image_ctx;

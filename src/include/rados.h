@@ -464,6 +464,21 @@ enum {
 
 const char *ceph_osd_watch_op_name(int o);
 
+enum {
+	CEPH_OSD_ALLOC_HINT_FLAG_SEQUENTIAL_WRITE = 1,
+	CEPH_OSD_ALLOC_HINT_FLAG_RANDOM_WRITE = 2,
+	CEPH_OSD_ALLOC_HINT_FLAG_SEQUENTIAL_READ = 4,
+	CEPH_OSD_ALLOC_HINT_FLAG_RANDOM_READ = 8,
+	CEPH_OSD_ALLOC_HINT_FLAG_APPEND_ONLY = 16,
+	CEPH_OSD_ALLOC_HINT_FLAG_IMMUTABLE = 32,
+	CEPH_OSD_ALLOC_HINT_FLAG_SHORTLIVED = 64,
+	CEPH_OSD_ALLOC_HINT_FLAG_LONGLIVED = 128,
+	CEPH_OSD_ALLOC_HINT_FLAG_COMPRESSIBLE = 256,
+	CEPH_OSD_ALLOC_HINT_FLAG_INCOMPRESSIBLE = 512,
+};
+
+const char *ceph_osd_alloc_hint_flag_name(int f);
+
 /*
  * an individual object operation.  each may be accompanied by some data
  * payload
@@ -535,6 +550,7 @@ struct ceph_osd_op {
 		struct {
 			__le64 expected_object_size;
 			__le64 expected_write_size;
+			__le32 flags;  /* CEPH_OSD_OP_ALLOC_HINT_FLAG_* */
 		} __attribute__ ((packed)) alloc_hint;
 		struct {
 			__le64 offset;

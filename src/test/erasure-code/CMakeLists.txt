@@ -1,17 +1,18 @@
 
-add_ceph_test(test-erasure-code.sh ${CMAKE_CURRENT_SOURCE_DIR}/test-erasure-code.sh)
-add_ceph_test(test-erasure-eio.sh ${CMAKE_CURRENT_SOURCE_DIR}/test-erasure-eio.sh)
-
 add_executable(ceph_erasure_code_benchmark 
   ${CMAKE_SOURCE_DIR}/src/erasure-code/ErasureCode.cc
   ceph_erasure_code_benchmark.cc)
 target_link_libraries(ceph_erasure_code_benchmark osd common ${Boost_PROGRAM_OPTIONS_LIBRARY} global dl)
+install(TARGETS ceph_erasure_code_benchmark
+  DESTINATION bin)
 
 add_executable(ceph_erasure_code_non_regression ceph_erasure_code_non_regression.cc)
 target_link_libraries(ceph_erasure_code_non_regression osd common ${Boost_PROGRAM_OPTIONS_LIBRARY} global dl)
 
 add_executable(ceph_erasure_code ceph_erasure_code.cc)
 target_link_libraries(ceph_erasure_code osd common ${Boost_PROGRAM_OPTIONS_LIBRARY} global dl)
+install(TARGETS ceph_erasure_code
+  DESTINATION bin)
 
 add_library(ec_example SHARED 
   ErasureCodePluginExample.cc

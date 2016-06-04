@@ -21,23 +21,20 @@
 #include "OSDMonitor.h"
 
 #include "common/strtol.h"
-#include "common/ceph_argparse.h"
 #include "common/perf_counters.h"
-#include "common/Timer.h"
 #include "common/config.h"
 #include "common/cmdparse.h"
-
 #include "messages/MMDSMap.h"
 #include "messages/MFSMap.h"
-#include "messages/MMDSBeacon.h"
 #include "messages/MMDSLoadTargets.h"
 #include "messages/MMonCommand.h"
 #include "messages/MGenericMessage.h"
 
 #include "include/assert.h"
 #include "include/str_list.h"
-
+#include "include/stringify.h"
 #include "mds/mdstypes.h"
+#include "Session.h"
 
 #define dout_subsys ceph_subsys_mon
 #undef dout_prefix
@@ -141,7 +138,7 @@ void MDSMonitor::update_from_paxos(bool *need_bootstrap)
 
   dout(10) << __func__ << " version " << version
 	   << ", my e " << fsmap.epoch << dendl;
-  assert(version >= fsmap.epoch);
+  assert(version > fsmap.epoch);
 
   // read and decode
   fsmap_bl.clear();
@@ -616,7 +613,8 @@ bool MDSMonitor::prepare_beacon(MonOpRequestRef op)
       dout(4) << __func__ << ": marking rank "
               << info.rank << " damaged" << dendl;
 
-      const utime_t until = ceph_clock_now(g_ceph_context);
+      utime_t until = ceph_clock_now(g_ceph_context);
+      until += g_conf->mds_blacklist_interval;
       const auto blacklist_epoch = mon->osdmon()->blacklist(info.addr, until);
       request_proposal(mon->osdmon());
       pending_fsmap.damaged(gid, blacklist_epoch);
@@ -1017,13 +1015,44 @@ bool MDSMonitor::preprocess_command(MonOpRequestRef op)
 	delete p;
     }
   } else if (prefix == "mds metadata") {
-    string who;
-    cmd_getval(g_ceph_context, cmdmap, "who", who);
     if (!f)
       f.reset(Formatter::create("json-pretty"));
-    f->open_object_section("mds_metadata");
-    r = dump_metadata(who, f.get(), ss);
-    f->close_section();
+
+    string who;
+    bool all = !cmd_getval(g_ceph_context, cmdmap, "who", who);
+    dout(1) << "all = " << all << dendl;
+    if (all) {
+      r = 0;
+      // Dump all MDSs' metadata
+      const auto all_info = fsmap.get_mds_info();
+
+      f->open_array_section("mds_metadata");
+      for(const auto &i : all_info) {
+        const auto &info = i.second;
+
+        f->open_object_section("mds");
+        f->dump_string("name", info.name);
+        std::ostringstream get_err;
+        r = dump_metadata(info.name, f.get(), get_err);
+        if (r == -EINVAL || r == -ENOENT) {
+          // Drop error, list what metadata we do have
+          dout(1) << get_err.str() << dendl;
+          r = 0;
+        } else if (r != 0) {
+          derr << "Unexpected error reading metadata: " << cpp_strerror(r)
+               << dendl;
+          ss << get_err.str();
+          break;
+        }
+        f->close_section();
+      }
+      f->close_section();
+    } else {
+      // Dump a single daemon's metadata
+      f->open_object_section("mds_metadata");
+      r = dump_metadata(who, f.get(), ss);
+      f->close_section();
+    }
     f->flush(ds);
   } else if (prefix == "mds getmap") {
     epoch_t e;
@@ -1472,7 +1501,7 @@ class FlagSetHandler : public FileSystemCommandHandler
         return r;
       }
 
-      bool jewel = mon->get_quorum_features() && CEPH_FEATURE_SERVER_JEWEL;
+      bool jewel = mon->get_quorum_features() & CEPH_FEATURE_SERVER_JEWEL;
       if (flag_bool && !jewel) {
         ss << "Multiple-filesystems are forbidden until all mons are updated";
         return -EINVAL;
@@ -1778,8 +1807,15 @@ public:
     if (var == "max_mds") {
       // NOTE: see also "mds set_max_mds", which can modify the same field.
       if (interr.length()) {
+        ss << interr;
 	return -EINVAL;
       }
+
+      if (n <= 0) {
+        ss << "You must specify at least one MDS";
+        return -EINVAL;
+      }
+
       if (!fs->mds_map.allows_multimds() && n > fs->mds_map.get_max_mds() &&
 	  n > 1) {
 	ss << "multi-MDS clusters are not enabled; set 'allow_multimds' to enable";
@@ -2056,7 +2092,6 @@ class RemoveDataPoolHandler : public FileSystemCommandHandler
       string err;
       poolid = strict_strtol(poolname.c_str(), 10, &err);
       if (err.length()) {
-	poolid = -1;
 	ss << "pool '" << poolname << "' does not exist";
         return -ENOENT;
       } else if (poolid < 0) {
@@ -2068,7 +2103,6 @@ class RemoveDataPoolHandler : public FileSystemCommandHandler
     assert(poolid >= 0);  // Checked by parsing code above
 
     if (fs->mds_map.get_first_data_pool() == poolid) {
-      poolid = -1;
       ss << "cannot remove default data pool";
       return -EINVAL;
     }
@@ -2357,7 +2391,7 @@ int MDSMonitor::legacy_filesystem_command(
   if (prefix == "mds set_max_mds") {
     // NOTE: deprecated by "fs set max_mds"
     int64_t maxmds;
-    if (!cmd_getval(g_ceph_context, cmdmap, "maxmds", maxmds) || maxmds < 0) {
+    if (!cmd_getval(g_ceph_context, cmdmap, "maxmds", maxmds) || maxmds <= 0) {
       return -EINVAL;
     }
 
@@ -2414,22 +2448,22 @@ void MDSMonitor::check_subs()
 {
   std::list<std::string> types;
 
-  // Subscriptions may be to "fsmap" (MDS and legacy clients),
-  // "fsmap.<namespace>", or to "fsmap" for the full state of all
+  // Subscriptions may be to "mdsmap" (MDS and legacy clients),
+  // "mdsmap.<namespace>", or to "fsmap" for the full state of all
   // filesystems.  Build a list of all the types we service
   // subscriptions for.
-  types.push_back("mdsmap");
   types.push_back("fsmap");
+  types.push_back("mdsmap");
   for (const auto &i : fsmap.filesystems) {
     auto fscid = i.first;
     std::ostringstream oss;
-    oss << "fsmap." << fscid;
+    oss << "mdsmap." << fscid;
     types.push_back(oss.str());
   }
 
   for (const auto &type : types) {
     if (mon->session_map.subs.count(type) == 0)
-      return;
+      continue;
     xlist<Subscription*>::iterator p = mon->session_map.subs[type]->begin();
     while (!p.end()) {
       Subscription *sub = *p;
