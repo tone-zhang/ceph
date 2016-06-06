@@ -175,6 +175,12 @@ void OpTracker::unregister_inflight_op(TrackedOp *i)
 
 bool OpTracker::check_ops_in_flight(std::vector<string> &warning_vector)
 {
+  int slow;
+  return check_ops_in_flight(warning_vector, slow);  
+}
+
+bool OpTracker::check_ops_in_flight(std::vector<string> &warning_vector, int &slow)
+{
   RWLock::RLocker l(lock);
   if (!tracking_enabled)
     return false;
@@ -214,7 +220,7 @@ bool OpTracker::check_ops_in_flight(std::vector<string> &warning_vector)
   //store summary message
   warning_vector.push_back("");
 
-  int slow = 0;     // total slow
+  slow = 0;    // total slow, reset it to 0 anyway
   int warned = 0;   // total logged
   for (uint32_t iter = 0; iter < num_optracker_shards; iter++) {
     ShardedTrackingData* sdata = sharded_in_flight_list[iter];
